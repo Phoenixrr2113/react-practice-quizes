@@ -129,6 +129,105 @@ function createStore(initialState) {
 
   return snapshot;
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useSyncExternalStoreShim } from './implementation';
+
+function createStore(initialState) {
+  let state = initialState;
+  const listeners = new Set();
+  return {
+    getState: () => state,
+    setState: (fn) => {
+      state = fn(state);
+      listeners.forEach(l => l());
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+describe('useSyncExternalStoreShim', () => {
+
+  test('returns the initial snapshot', () => {
+    const store = createStore({ count: 0 });
+    const { result } = renderHook(() =>
+      useSyncExternalStoreShim(
+        store.subscribe,
+        () => store.getState().count,
+        () => 0,
+      )
+    );
+    expect(result.current).toBe(0);
+  });
+
+  test('updates when store changes', () => {
+    const store = createStore({ count: 0 });
+    const { result } = renderHook(() =>
+      useSyncExternalStoreShim(
+        store.subscribe,
+        () => store.getState().count,
+        () => 0,
+      )
+    );
+    act(() => {
+      store.setState(s => ({ ...s, count: 5 }));
+    });
+    expect(result.current).toBe(5);
+  });
+
+  test('does not re-render when snapshot is unchanged', () => {
+    const store = createStore({ count: 0, other: 'a' });
+    let renderCount = 0;
+    renderHook(() => {
+      renderCount++;
+      return useSyncExternalStoreShim(
+        store.subscribe,
+        () => store.getState().count,
+        () => 0,
+      );
+    });
+    const initialRenders = renderCount;
+    act(() => {
+      store.setState(s => ({ ...s, other: 'b' }));
+    });
+    // Selector returns same count, so no extra render
+    expect(renderCount).toBe(initialRenders);
+  });
+
+  test('unsubscribes on unmount', () => {
+    const store = createStore({ count: 0 });
+    const { result, unmount } = renderHook(() =>
+      useSyncExternalStoreShim(
+        store.subscribe,
+        () => store.getState().count,
+        () => 0,
+      )
+    );
+    unmount();
+    // Should not throw after unmount
+    act(() => {
+      store.setState(s => ({ ...s, count: 99 }));
+    });
+  });
+
+  test('works with different selectors', () => {
+    const store = createStore({ count: 0, name: 'test' });
+    const { result } = renderHook(() =>
+      useSyncExternalStoreShim(
+        store.subscribe,
+        () => store.getState().name,
+        () => '',
+      )
+    );
+    expect(result.current).toBe('test');
+    act(() => {
+      store.setState(s => ({ ...s, name: 'updated' }));
+    });
+    expect(result.current).toBe('updated');
+  });
+});`,
     keyPoints: [
       "The TEARING problem: In concurrent mode, React can pause rendering Component A, let the store mutate, then render Component B with new data — now A and B show inconsistent state from the same store",
       "useReducer with Object.is comparison prevents infinite loops while allowing forced re-renders when the snapshot genuinely changes",
@@ -271,6 +370,116 @@ const fetchMachine = {
 
   return [state, context, send];
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useStateMachine } from './implementation';
+
+const simpleMachine = {
+  initial: 'idle',
+  states: {
+    idle: {
+      on: {
+        START: { target: 'running', action: (ctx, e) => ({ ...ctx, startedAt: e.time }) }
+      }
+    },
+    running: {
+      on: {
+        STOP: { target: 'idle', action: (ctx) => ({ ...ctx, startedAt: null }) },
+        PAUSE: { target: 'paused' }
+      }
+    },
+    paused: {
+      on: {
+        RESUME: { target: 'running' }
+      }
+    }
+  }
+};
+
+const guardedMachine = {
+  initial: 'locked',
+  states: {
+    locked: {
+      on: {
+        UNLOCK: [
+          { target: 'unlocked', guard: (ctx, e) => e.pin === ctx.pin },
+          { target: 'locked', action: (ctx) => ({ ...ctx, attempts: (ctx.attempts || 0) + 1 }) }
+        ]
+      }
+    },
+    unlocked: {
+      on: {
+        LOCK: { target: 'locked' }
+      }
+    }
+  }
+};
+
+describe('useStateMachine', () => {
+  test('starts in the initial state', () => {
+    const { result } = renderHook(() => useStateMachine(simpleMachine, {}));
+    const [state] = result.current;
+    expect(state).toBe('idle');
+  });
+
+  test('transitions on valid events', () => {
+    const { result } = renderHook(() => useStateMachine(simpleMachine, {}));
+    act(() => {
+      const send = result.current[2];
+      send({ type: 'START', time: 100 });
+    });
+    expect(result.current[0]).toBe('running');
+  });
+
+  test('updates context via transition actions', () => {
+    const { result } = renderHook(() => useStateMachine(simpleMachine, {}));
+    act(() => {
+      result.current[2]({ type: 'START', time: 42 });
+    });
+    expect(result.current[1].startedAt).toBe(42);
+  });
+
+  test('ignores invalid transitions', () => {
+    const { result } = renderHook(() => useStateMachine(simpleMachine, {}));
+    act(() => {
+      // PAUSE is not valid from idle
+      result.current[2]({ type: 'PAUSE' });
+    });
+    expect(result.current[0]).toBe('idle');
+  });
+
+  test('supports guarded transitions — guard passes', () => {
+    const { result } = renderHook(() =>
+      useStateMachine(guardedMachine, { pin: '1234' })
+    );
+    act(() => {
+      result.current[2]({ type: 'UNLOCK', pin: '1234' });
+    });
+    expect(result.current[0]).toBe('unlocked');
+  });
+
+  test('supports guarded transitions — guard fails, falls through to default', () => {
+    const { result } = renderHook(() =>
+      useStateMachine(guardedMachine, { pin: '1234' })
+    );
+    act(() => {
+      result.current[2]({ type: 'UNLOCK', pin: 'wrong' });
+    });
+    expect(result.current[0]).toBe('locked');
+    expect(result.current[1].attempts).toBe(1);
+  });
+
+  test('handles multi-step transitions', () => {
+    const { result } = renderHook(() => useStateMachine(simpleMachine, {}));
+    act(() => { result.current[2]({ type: 'START', time: 1 }); });
+    expect(result.current[0]).toBe('running');
+    act(() => { result.current[2]({ type: 'PAUSE' }); });
+    expect(result.current[0]).toBe('paused');
+    act(() => { result.current[2]({ type: 'RESUME' }); });
+    expect(result.current[0]).toBe('running');
+    act(() => { result.current[2]({ type: 'STOP' }); });
+    expect(result.current[0]).toBe('idle');
+  });
+});`,
     keyPoints: [
       "The reducer is the perfect place for state machines — it's synchronous, pure, and React batches updates. Illegal transitions return the same reference, causing no re-render",
       "Guarded transitions as arrays with a fallback default mirrors XState's behavior — the first guard that passes wins",
@@ -427,6 +636,92 @@ function createCommand(action, prevState, nextState) {
     },
   ];
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useUndoRedo } from './implementation';
+
+function counterReducer(state, action) {
+  switch (action.type) {
+    case 'increment': return { ...state, count: state.count + 1 };
+    case 'decrement': return { ...state, count: state.count - 1 };
+    case 'set': return { ...state, count: action.value };
+    default: return state;
+  }
+}
+
+describe('useUndoRedo', () => {
+  test('returns [state, dispatch, controls]', () => {
+    const { result } = renderHook(() =>
+      useUndoRedo(counterReducer, { count: 0 })
+    );
+    expect(result.current).toHaveLength(3);
+    expect(result.current[0]).toEqual({ count: 0 });
+    expect(typeof result.current[1]).toBe('function');
+    expect(typeof result.current[2].undo).toBe('function');
+    expect(typeof result.current[2].redo).toBe('function');
+  });
+
+  test('dispatch updates state through the inner reducer', () => {
+    const { result } = renderHook(() =>
+      useUndoRedo(counterReducer, { count: 0 })
+    );
+    act(() => { result.current[1]({ type: 'increment' }); });
+    expect(result.current[0].count).toBe(1);
+  });
+
+  test('canUndo is false initially, true after dispatch', () => {
+    const { result } = renderHook(() =>
+      useUndoRedo(counterReducer, { count: 0 })
+    );
+    expect(result.current[2].canUndo).toBe(false);
+    act(() => { result.current[1]({ type: 'increment' }); });
+    expect(result.current[2].canUndo).toBe(true);
+  });
+
+  test('undo restores previous state', () => {
+    const { result } = renderHook(() =>
+      useUndoRedo(counterReducer, { count: 0 })
+    );
+    act(() => { result.current[1]({ type: 'increment' }); });
+    expect(result.current[0].count).toBe(1);
+    act(() => { result.current[2].undo(); });
+    expect(result.current[0].count).toBe(0);
+  });
+
+  test('redo restores undone state', () => {
+    const { result } = renderHook(() =>
+      useUndoRedo(counterReducer, { count: 0 })
+    );
+    act(() => { result.current[1]({ type: 'increment' }); });
+    act(() => { result.current[2].undo(); });
+    expect(result.current[2].canRedo).toBe(true);
+    act(() => { result.current[2].redo(); });
+    expect(result.current[0].count).toBe(1);
+  });
+
+  test('new dispatch clears redo stack', () => {
+    const { result } = renderHook(() =>
+      useUndoRedo(counterReducer, { count: 0 })
+    );
+    act(() => { result.current[1]({ type: 'increment' }); });
+    act(() => { result.current[2].undo(); });
+    expect(result.current[2].canRedo).toBe(true);
+    act(() => { result.current[1]({ type: 'set', value: 99 }); });
+    expect(result.current[2].canRedo).toBe(false);
+  });
+
+  test('respects maxHistory option', () => {
+    const { result } = renderHook(() =>
+      useUndoRedo(counterReducer, { count: 0 }, { maxHistory: 2 })
+    );
+    act(() => { result.current[1]({ type: 'set', value: 1 }); });
+    act(() => { result.current[1]({ type: 'set', value: 2 }); });
+    act(() => { result.current[1]({ type: 'set', value: 3 }); });
+    // Only 2 undos should be possible
+    act(() => { result.current[2].undo(); });
+    act(() => { result.current[2].undo(); });
+    expect(result.current[2].canUndo).toBe(false);
+  });
+});`,
     keyPoints: [
       "The meta-reducer pattern wraps the user's reducer — it intercepts __UNDO__/__REDO__ internally and delegates everything else to the original reducer",
       "Command coalescing compares action.type + timestamp window — this is exactly how text editors merge rapid keystrokes into one undo step",
@@ -661,6 +956,77 @@ function useForm(config = {}) {
     },
   };
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useForm } from './implementation';
+
+describe('Proxy-Based Form State Manager', () => {
+  test('useForm returns register, handleSubmit, watch, setValue, getValues, reset', () => {
+    const { result } = renderHook(() => useForm({ defaultValues: { name: '' } }));
+    expect(typeof result.current.register).toBe('function');
+    expect(typeof result.current.handleSubmit).toBe('function');
+    expect(typeof result.current.watch).toBe('function');
+    expect(typeof result.current.setValue).toBe('function');
+    expect(typeof result.current.getValues).toBe('function');
+    expect(typeof result.current.reset).toBe('function');
+  });
+
+  test('register returns an object with name, ref, onChange, onBlur', () => {
+    const { result } = renderHook(() => useForm({ defaultValues: { name: '' } }));
+    const field = result.current.register('name');
+    expect(field.name).toBe('name');
+    expect(typeof field.ref).toBe('function');
+    expect(typeof field.onChange).toBe('function');
+    expect(typeof field.onBlur).toBe('function');
+  });
+
+  test('getValues returns current form values', () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { name: 'John', email: 'john@test.com' } })
+    );
+    const values = result.current.getValues();
+    expect(values.name).toBe('John');
+    expect(values.email).toBe('john@test.com');
+  });
+
+  test('getValues with field name returns specific field', () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { name: 'John', email: 'john@test.com' } })
+    );
+    expect(result.current.getValues('name')).toBe('John');
+  });
+
+  test('setValue updates a field value', () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { name: '' } })
+    );
+    act(() => { result.current.setValue('name', 'Jane'); });
+    expect(result.current.getValues('name')).toBe('Jane');
+  });
+
+  test('reset restores default values', () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { name: 'original' } })
+    );
+    act(() => { result.current.setValue('name', 'changed'); });
+    expect(result.current.getValues('name')).toBe('changed');
+    act(() => { result.current.reset(); });
+    expect(result.current.getValues('name')).toBe('original');
+  });
+
+  test('formState.isDirty starts false', () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { name: '' } })
+    );
+    expect(result.current.formState.isDirty).toBe(false);
+  });
+
+  test('formState.isValid starts true with no validators', () => {
+    const { result } = renderHook(() =>
+      useForm({ defaultValues: { name: '' } })
+    );
+    expect(result.current.formState.isValid).toBe(true);
+  });
+});`,
     keyPoints: [
       "Values live in refs, not state — this is the core insight of react-hook-form. Writing to a ref doesn't trigger a re-render, so typing in one field doesn't re-render the whole form",
       "register() returns a ref callback that captures the DOM element + onChange/onBlur handlers. This is the 'uncontrolled input' pattern that makes react-hook-form fast",
@@ -817,6 +1183,74 @@ function shallowEqual(a, b) {
   if (keysA.length !== Object.keys(b).length) return false;
   return keysA.every(key => Object.is(a[key], b[key]));
 }`,
+    testCode: `import React from 'react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import { createSelectableContext } from './implementation';
+
+describe('Selectable Context', () => {
+  test('createSelectableContext returns Provider, useSelector, useDispatch', () => {
+    const ctx = createSelectableContext({ count: 0 });
+    expect(ctx.Provider).toBeDefined();
+    expect(ctx.useSelector).toBeDefined();
+    expect(ctx.useDispatch).toBeDefined();
+  });
+
+  test('useSelector reads initial state slice', () => {
+    const { Provider, useSelector } = createSelectableContext({ count: 0, name: 'test' });
+    function Display() {
+      const name = useSelector(s => s.name);
+      return <div data-testid="name">{name}</div>;
+    }
+    render(<Provider><Display /></Provider>);
+    expect(screen.getByTestId('name').textContent).toBe('test');
+  });
+
+  test('useDispatch updates state and useSelector reflects changes', () => {
+    const { Provider, useSelector, useDispatch } = createSelectableContext({ count: 0 });
+    function Counter() {
+      const count = useSelector(s => s.count);
+      const dispatch = useDispatch();
+      return (
+        <div>
+          <span data-testid="count">{count}</span>
+          <button onClick={() => dispatch(s => ({ ...s, count: s.count + 1 }))}>inc</button>
+        </div>
+      );
+    }
+    render(<Provider><Counter /></Provider>);
+    expect(screen.getByTestId('count').textContent).toBe('0');
+    fireEvent.click(screen.getByText('inc'));
+    expect(screen.getByTestId('count').textContent).toBe('1');
+  });
+
+  test('useSelector only re-renders when selected slice changes', () => {
+    const { Provider, useSelector, useDispatch } = createSelectableContext({ count: 0, other: 'a' });
+    let countRenders = 0;
+    function CountDisplay() {
+      const count = useSelector(s => s.count);
+      countRenders++;
+      return <span>{count}</span>;
+    }
+    function OtherUpdater() {
+      const dispatch = useDispatch();
+      return <button onClick={() => dispatch(s => ({ ...s, other: Math.random().toString() }))}>update other</button>;
+    }
+    render(<Provider><CountDisplay /><OtherUpdater /></Provider>);
+    const initial = countRenders;
+    fireEvent.click(screen.getByText('update other'));
+    // Count selector didn't change, so CountDisplay should not re-render
+    expect(countRenders).toBe(initial);
+  });
+
+  test('throws when useSelector is used outside Provider', () => {
+    const { useSelector } = createSelectableContext({ count: 0 });
+    function Bad() {
+      useSelector(s => s.count);
+      return null;
+    }
+    expect(() => render(<Bad />)).toThrow();
+  });
+});`,
     keyPoints: [
       "The fundamental trick: put the STORE in context, not the STATE. The context value (store reference) never changes, so the Provider never triggers context-based re-renders. Components subscribe to the store directly",
       "useSyncExternalStore is the bridge — it subscribes to the external store and only re-renders when getSnapshot returns a different value. This is concurrent-mode safe and prevents tearing",
@@ -1025,6 +1459,81 @@ function TabsContent({ children, value, forceMount = false, ...props }) {
 Tabs.List = TabsList;
 Tabs.Trigger = TabsTrigger;
 Tabs.Content = TabsContent;`,
+    testCode: `import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { Tabs } from './implementation';
+
+describe('Compound Components (Tabs)', () => {
+  test('renders with default value and shows active content', () => {
+    render(
+      <Tabs defaultValue="a">
+        <Tabs.List>
+          <Tabs.Trigger value="a">Tab A</Tabs.Trigger>
+          <Tabs.Trigger value="b">Tab B</Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="a">Content A</Tabs.Content>
+        <Tabs.Content value="b">Content B</Tabs.Content>
+      </Tabs>
+    );
+    expect(screen.getByText('Content A')).toBeTruthy();
+  });
+
+  test('clicking a trigger switches active content', () => {
+    render(
+      <Tabs defaultValue="a">
+        <Tabs.List>
+          <Tabs.Trigger value="a">Tab A</Tabs.Trigger>
+          <Tabs.Trigger value="b">Tab B</Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="a">Content A</Tabs.Content>
+        <Tabs.Content value="b">Content B</Tabs.Content>
+      </Tabs>
+    );
+    fireEvent.click(screen.getByText('Tab B'));
+    expect(screen.getByText('Content B')).toBeTruthy();
+  });
+
+  test('trigger has correct aria-selected attribute', () => {
+    render(
+      <Tabs defaultValue="a">
+        <Tabs.List>
+          <Tabs.Trigger value="a">Tab A</Tabs.Trigger>
+          <Tabs.Trigger value="b">Tab B</Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="a">Content A</Tabs.Content>
+        <Tabs.Content value="b">Content B</Tabs.Content>
+      </Tabs>
+    );
+    expect(screen.getByText('Tab A').getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByText('Tab B').getAttribute('aria-selected')).toBe('false');
+  });
+
+  test('works with arbitrary nesting between parent and children', () => {
+    render(
+      <Tabs defaultValue="a">
+        <Tabs.List>
+          <Tabs.Trigger value="a">Tab A</Tabs.Trigger>
+          <Tabs.Trigger value="b">Tab B</Tabs.Trigger>
+        </Tabs.List>
+        <div><div><Tabs.Content value="a">Nested A</Tabs.Content></div></div>
+        <Tabs.Content value="b">Content B</Tabs.Content>
+      </Tabs>
+    );
+    expect(screen.getByText('Nested A')).toBeTruthy();
+  });
+
+  test('content panel has role="tabpanel"', () => {
+    render(
+      <Tabs defaultValue="a">
+        <Tabs.List>
+          <Tabs.Trigger value="a">Tab A</Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="a">Content A</Tabs.Content>
+      </Tabs>
+    );
+    expect(screen.getByRole('tabpanel')).toBeTruthy();
+  });
+});`,
     keyPoints: [
       "Context-based implicit state sharing is the core pattern — children don't receive 'isActive' as a prop, they read it from context. This means arbitrary DOM nesting between parent and children works, unlike with React.Children.map",
       "The registration system (triggersRef Map) lets keyboard navigation work without knowing the order of children at compile time — triggers register on mount and unregister on unmount, supporting dynamic lists",
@@ -1227,6 +1736,86 @@ function StoreDemo() {
     </div>
   );
 }`,
+    testCode: `import { createStore, createSelector, applyMiddleware } from './implementation';
+
+describe('Reactive Store', () => {
+  test('createStore returns store with getState, setState, subscribe, destroy', () => {
+    const store = createStore({ count: 0 });
+    expect(typeof store.getState).toBe('function');
+    expect(typeof store.setState).toBe('function');
+    expect(typeof store.subscribe).toBe('function');
+    expect(typeof store.destroy).toBe('function');
+  });
+
+  test('getState returns the current state', () => {
+    const store = createStore({ count: 0, name: 'test' });
+    expect(store.getState()).toEqual({ count: 0, name: 'test' });
+  });
+
+  test('setState merges partial state', () => {
+    const store = createStore({ count: 0, name: 'test' });
+    store.setState({ count: 5 });
+    expect(store.getState().count).toBe(5);
+    expect(store.getState().name).toBe('test');
+  });
+
+  test('setState accepts updater function', () => {
+    const store = createStore({ count: 0 });
+    store.setState((s) => ({ ...s, count: s.count + 1 }));
+    expect(store.getState().count).toBe(1);
+  });
+
+  test('subscribe notifies on state change', () => {
+    const store = createStore({ count: 0 });
+    const listener = jest.fn();
+    store.subscribe(listener);
+    store.setState({ count: 1 });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  test('unsubscribe stops notifications', () => {
+    const store = createStore({ count: 0 });
+    const listener = jest.fn();
+    const unsub = store.subscribe(listener);
+    unsub();
+    store.setState({ count: 1 });
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test('destroy clears all listeners', () => {
+    const store = createStore({ count: 0 });
+    const listener = jest.fn();
+    store.subscribe(listener);
+    store.destroy();
+    store.setState({ count: 1 });
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test('createSelector caches computed results', () => {
+    const store = createStore({ items: [1, 2, 3], filter: '' });
+    const selectorFn = jest.fn((s) => s.items.filter(i => i > 1));
+    const selector = createSelector(store, selectorFn);
+    const result1 = selector(store.getState());
+    const result2 = selector(store.getState());
+    expect(result1).toEqual([2, 3]);
+    // Should use cached result for same input
+    expect(result1).toBe(result2);
+  });
+
+  test('applyMiddleware wraps setState', () => {
+    const store = createStore({ count: 0 });
+    const log = [];
+    const logger = (st) => (next) => (partial) => {
+      log.push('before');
+      next(partial);
+      log.push('after');
+    };
+    applyMiddleware(store, logger);
+    store.setState({ count: 1 });
+    expect(log).toEqual(['before', 'after']);
+    expect(store.getState().count).toBe(1);
+  });
+});`,
     keyPoints: [
       "Object.is equality on selector output is the key optimization — if the derived value hasn't changed, the component skips re-rendering even though the store's root reference changed. This is exactly how Zustand's useStore works internally",
       "The middleware pattern (store => next => partial) mirrors Redux middleware and Zustand's middleware API — each middleware wraps setState, allowing logging, persistence, devtools, and immer integration to be composed",
@@ -1506,6 +2095,81 @@ function useField(form, name) {
     onBlur,
   };
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { defineSchema, useForm, useField } from './implementation';
+
+describe('Schema-Driven Form Validation', () => {
+  const schema = defineSchema({
+    username: {
+      required: 'Username is required',
+      minLength: [3, 'At least 3 characters'],
+    },
+    email: {
+      required: 'Email is required',
+      pattern: [/^[^@]+@[^@]+\\.[^@]+$/, 'Invalid email'],
+    },
+    password: {
+      required: 'Password is required',
+      minLength: [8, 'At least 8 characters'],
+    },
+  });
+
+  test('defineSchema returns a schema object with fields', () => {
+    expect(schema).toBeDefined();
+    expect(schema.fields).toBeDefined();
+    expect(schema.fields.username).toBeDefined();
+    expect(schema.fields.email).toBeDefined();
+  });
+
+  test('useForm returns form state and handlers', () => {
+    const { result } = renderHook(() =>
+      useForm(schema, { username: '', email: '', password: '' })
+    );
+    expect(result.current.handleSubmit).toBeDefined();
+    expect(typeof result.current.handleSubmit).toBe('function');
+    expect(result.current.errors).toBeDefined();
+  });
+
+  test('useField returns field state with value, onChange, onBlur', () => {
+    const { result: formResult } = renderHook(() =>
+      useForm(schema, { username: '', email: '', password: '' })
+    );
+    const { result } = renderHook(() =>
+      useField(formResult.current, 'username')
+    );
+    expect(result.current.value).toBeDefined();
+    expect(typeof result.current.onChange).toBe('function');
+    expect(typeof result.current.onBlur).toBe('function');
+    expect(result.current.touched).toBe(false);
+    expect(result.current.dirty).toBe(false);
+  });
+
+  test('useField onChange updates field value', () => {
+    const { result: formResult } = renderHook(() =>
+      useForm(schema, { username: '', email: '', password: '' })
+    );
+    const { result } = renderHook(() =>
+      useField(formResult.current, 'username')
+    );
+    act(() => {
+      result.current.onChange({ target: { value: 'bob' } });
+    });
+    expect(result.current.value).toBe('bob');
+  });
+
+  test('useField onBlur marks field as touched', () => {
+    const { result: formResult } = renderHook(() =>
+      useForm(schema, { username: '', email: '', password: '' })
+    );
+    const { result } = renderHook(() =>
+      useField(formResult.current, 'username')
+    );
+    act(() => {
+      result.current.onBlur();
+    });
+    expect(result.current.touched).toBe(true);
+  });
+});`,
     keyPoints: [
       "Field-level subscriptions via separate listener sets per field name ensure that typing in one input does not re-render sibling fields — this is the core optimization react-hook-form uses to outperform Formik on large forms",
       "Async validation with debounce via setTimeout and stale-value checking prevents race conditions — if the user types 'abc' then 'abcd', only the result for 'abcd' is applied, matching how real username-availability checks must work",
@@ -1533,6 +2197,88 @@ function useField(form, name) {
       "Event history with replay: new subscribers can opt-in to receive the last N events on that channel immediately upon subscribing",
       "useEvent hook: subscribe to events with automatic cleanup on unmount, preventing zombie subscriptions and stale closure bugs",
     ],
+    testCode: `import { createEventBus } from './implementation';
+
+describe('createEventBus', () => {
+  test('emits and receives events', () => {
+    const bus = createEventBus();
+    const handler = jest.fn();
+    bus.on('test', handler);
+    bus.emit('test', { value: 1 });
+    expect(handler).toHaveBeenCalledWith({ value: 1 }, 'test');
+  });
+
+  test('unsubscribes with returned function', () => {
+    const bus = createEventBus();
+    const handler = jest.fn();
+    const unsub = bus.on('test', handler);
+    unsub();
+    bus.emit('test', { value: 1 });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  test('wildcard * matches all events', () => {
+    const bus = createEventBus();
+    const handler = jest.fn();
+    bus.on('*', handler);
+    bus.emit('user.login', { id: 1 });
+    bus.emit('app.start', {});
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  test('wildcard user.* matches user.login and user.logout', () => {
+    const bus = createEventBus();
+    const handler = jest.fn();
+    bus.on('user.*', handler);
+    bus.emit('user.login', { id: 1 });
+    bus.emit('user.logout', { id: 1 });
+    bus.emit('app.start', {}); // should NOT match
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  test('once listener fires only once', () => {
+    const bus = createEventBus();
+    const handler = jest.fn();
+    bus.once('test', handler);
+    bus.emit('test', 'a');
+    bus.emit('test', 'b');
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith('a', 'test');
+  });
+
+  test('replays history for late subscribers', () => {
+    const bus = createEventBus({ historySize: 5 });
+    bus.emit('msg', { text: 'one' });
+    bus.emit('msg', { text: 'two' });
+    bus.emit('msg', { text: 'three' });
+    const handler = jest.fn();
+    bus.on('msg', handler, { replay: 2 });
+    // Should have been called with the last 2 historical events
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(handler).toHaveBeenCalledWith({ text: 'two' }, 'msg');
+    expect(handler).toHaveBeenCalledWith({ text: 'three' }, 'msg');
+  });
+
+  test('off removes a specific handler', () => {
+    const bus = createEventBus();
+    const handler = jest.fn();
+    bus.on('test', handler);
+    bus.off('test', handler);
+    bus.emit('test', {});
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  test('multiple handlers on same event', () => {
+    const bus = createEventBus();
+    const h1 = jest.fn();
+    const h2 = jest.fn();
+    bus.on('test', h1);
+    bus.on('test', h2);
+    bus.emit('test', 'data');
+    expect(h1).toHaveBeenCalledTimes(1);
+    expect(h2).toHaveBeenCalledTimes(1);
+  });
+});`,
     starterCode: `// Implement an event bus with React integration:
 
 // const bus = createEventBus({ historySize: 10 });

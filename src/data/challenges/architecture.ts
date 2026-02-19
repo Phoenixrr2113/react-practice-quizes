@@ -221,6 +221,86 @@ function applyOperation(state, op) {
   }
   return next;
 }`,
+    testCode: `import { renderHook } from '@testing-library/react';
+import { detectCollision, useDragAndDrop } from './implementation';
+
+// Helper to create a mock DOMRect-like drop zone
+function makeZone(id, type, left, top, width, height) {
+  return {
+    id,
+    type,
+    rect: { left, top, right: left + width, bottom: top + height, width, height },
+  };
+}
+
+describe('detectCollision', () => {
+
+  test('returns null when dropZones is empty', () => {
+    expect(detectCollision(100, 100, [], 'item')).toBeNull();
+  });
+
+  test('detects closest drop zone by pointer position', () => {
+    const zones = [
+      makeZone('col-1', 'container', 0, 0, 200, 400),
+      makeZone('col-2', 'container', 300, 0, 200, 400),
+    ];
+    const result = detectCollision(350, 200, zones, 'container');
+    expect(result.targetId).toBe('col-2');
+  });
+
+  test('item dragged to center of container returns insert-into-container', () => {
+    const zones = [makeZone('col-1', 'container', 0, 0, 200, 400)];
+    // Center of container: y=200 out of 400 = 0.5 relative (center zone)
+    const result = detectCollision(100, 200, zones, 'item');
+    expect(result.targetId).toBe('col-1');
+    expect(result.position).toBe('inside');
+    expect(result.type).toBe('insert-into-container');
+  });
+
+  test('item dragged to top edge of container returns before', () => {
+    const zones = [makeZone('col-1', 'container', 0, 0, 200, 400)];
+    // Top edge: y=20 => relativeY = 20/400 = 0.05, which is < 0.25
+    const result = detectCollision(100, 20, zones, 'item');
+    expect(result.targetId).toBe('col-1');
+    expect(result.position).toBe('before');
+  });
+
+  test('item dragged to bottom edge of container returns after', () => {
+    const zones = [makeZone('col-1', 'container', 0, 0, 200, 400)];
+    // Bottom edge: y=380 => relativeY = 380/400 = 0.95, which is > 0.75
+    const result = detectCollision(100, 380, zones, 'item');
+    expect(result.targetId).toBe('col-1');
+    expect(result.position).toBe('after');
+  });
+
+  test('pointer near an item returns reorder-item with before/after', () => {
+    const zones = [makeZone('item-a', 'item', 10, 10, 180, 50)];
+    // Top half: y=20 => relativeY = (20-10)/50 = 0.2 < 0.5
+    const result = detectCollision(100, 20, zones, 'item');
+    expect(result.targetId).toBe('item-a');
+    expect(result.position).toBe('before');
+    expect(result.type).toBe('reorder-item');
+  });
+});
+
+describe('useDragAndDrop', () => {
+
+  test('returns the expected API shape', () => {
+    const initial = {
+      containers: ['col-1', 'col-2'],
+      items: { 'col-1': ['a', 'b'], 'col-2': ['c'] },
+    };
+    const { result } = renderHook(() => useDragAndDrop(initial));
+    expect(result.current.state).toEqual(initial);
+    expect(typeof result.current.dragStart).toBe('function');
+    expect(typeof result.current.dragOver).toBe('function');
+    expect(typeof result.current.dragEnd).toBe('function');
+    expect(typeof result.current.dragCancel).toBe('function');
+    expect(result.current.activeId).toBeNull();
+    expect(result.current.overId).toBeNull();
+    expect(result.current.operation).toBeNull();
+  });
+});`,
     keyPoints: [
       "Edge vs center detection (the 25% threshold) is what separates good DnD from great DnD — it's how users intuitively communicate 'put it IN here' vs 'put it NEXT TO this'",
       "structuredClone for rollback snapshots avoids shared references — critical when state contains nested arrays/objects",
@@ -435,6 +515,81 @@ class PluginErrorBoundary extends React.Component {
     return this.props.children;
   }
 }`,
+    testCode: `import { createEventBus } from './implementation';
+
+describe('createEventBus', () => {
+
+  test('returns an object with emit and on methods', () => {
+    const bus = createEventBus();
+    expect(typeof bus.emit).toBe('function');
+    expect(typeof bus.on).toBe('function');
+  });
+
+  test('on registers a handler that receives emitted payloads', () => {
+    const bus = createEventBus();
+    const handler = jest.fn();
+    bus.on('test', handler);
+    bus.emit('test', { data: 42 });
+    expect(handler).toHaveBeenCalledWith({ data: 42 });
+  });
+
+  test('multiple handlers can subscribe to the same event', () => {
+    const bus = createEventBus();
+    const h1 = jest.fn();
+    const h2 = jest.fn();
+    bus.on('evt', h1);
+    bus.on('evt', h2);
+    bus.emit('evt', 'payload');
+    expect(h1).toHaveBeenCalledWith('payload');
+    expect(h2).toHaveBeenCalledWith('payload');
+  });
+
+  test('on returns an unsubscribe function', () => {
+    const bus = createEventBus();
+    const handler = jest.fn();
+    const unsub = bus.on('evt', handler);
+    expect(typeof unsub).toBe('function');
+    unsub();
+    bus.emit('evt', 'data');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  test('emit to an event with no listeners does not throw', () => {
+    const bus = createEventBus();
+    expect(() => bus.emit('nonexistent', 'data')).not.toThrow();
+  });
+
+  test('one handler throwing does not prevent others from running', () => {
+    const bus = createEventBus();
+    const badHandler = jest.fn(() => { throw new Error('oops'); });
+    const goodHandler = jest.fn();
+    bus.on('evt', badHandler);
+    bus.on('evt', goodHandler);
+    bus.emit('evt', 'data');
+    expect(badHandler).toHaveBeenCalled();
+    expect(goodHandler).toHaveBeenCalledWith('data');
+  });
+
+  test('different events are independent', () => {
+    const bus = createEventBus();
+    const h1 = jest.fn();
+    const h2 = jest.fn();
+    bus.on('event-a', h1);
+    bus.on('event-b', h2);
+    bus.emit('event-a', 'a');
+    expect(h1).toHaveBeenCalledWith('a');
+    expect(h2).not.toHaveBeenCalled();
+  });
+
+  test('destroy clears all listeners', () => {
+    const bus = createEventBus();
+    const handler = jest.fn();
+    bus.on('evt', handler);
+    bus.destroy();
+    bus.emit('evt', 'data');
+    expect(handler).not.toHaveBeenCalled();
+  });
+});`,
     keyPoints: [
       "Error Boundary per plugin is the key architectural decision — it's the same isolation model VS Code uses. A buggy extension crashes in its own sandbox, not the host app",
       "The event bus try/catch per handler prevents one plugin's broken handler from blocking others — defensive programming for untrusted code",
@@ -605,6 +760,74 @@ function deepEqual(a, b) {
   if (keysA.length !== Object.keys(b).length) return false;
   return keysA.every(key => deepEqual(a[key], b[key]));
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { deepEqual, useOptimisticMutations } from './implementation';
+
+describe('deepEqual', () => {
+
+  test('identical primitives are equal', () => {
+    expect(deepEqual(1, 1)).toBe(true);
+    expect(deepEqual('a', 'a')).toBe(true);
+    expect(deepEqual(true, true)).toBe(true);
+    expect(deepEqual(null, null)).toBe(true);
+  });
+
+  test('different primitives are not equal', () => {
+    expect(deepEqual(1, 2)).toBe(false);
+    expect(deepEqual('a', 'b')).toBe(false);
+    expect(deepEqual(null, undefined)).toBe(false);
+  });
+
+  test('shallow objects are compared by value', () => {
+    expect(deepEqual({ a: 1, b: 2 }, { a: 1, b: 2 })).toBe(true);
+    expect(deepEqual({ a: 1 }, { a: 2 })).toBe(false);
+  });
+
+  test('objects with different keys are not equal', () => {
+    expect(deepEqual({ a: 1 }, { b: 1 })).toBe(false);
+    expect(deepEqual({ a: 1 }, { a: 1, b: 2 })).toBe(false);
+  });
+
+  test('deeply nested objects are compared recursively', () => {
+    const a = { x: { y: { z: [1, 2, 3] } } };
+    const b = { x: { y: { z: [1, 2, 3] } } };
+    const c = { x: { y: { z: [1, 2, 4] } } };
+    expect(deepEqual(a, b)).toBe(true);
+    expect(deepEqual(a, c)).toBe(false);
+  });
+
+  test('arrays are compared element-wise', () => {
+    expect(deepEqual([1, 2, 3], [1, 2, 3])).toBe(true);
+    expect(deepEqual([1, 2], [1, 2, 3])).toBe(false);
+  });
+});
+
+describe('useOptimisticMutations', () => {
+
+  test('returns data, mutate, pending, and conflicts', async () => {
+    const fetcher = () => Promise.resolve([{ id: 1, text: 'Hello' }]);
+    const { result } = renderHook(() =>
+      useOptimisticMutations('todos', fetcher)
+    );
+    // Wait for initial fetch
+    await act(() => new Promise(r => setTimeout(r, 50)));
+    expect(result.current).toHaveProperty('data');
+    expect(typeof result.current.mutate).toBe('function');
+    expect(Array.isArray(result.current.pending)).toBe(true);
+    expect(Array.isArray(result.current.conflicts)).toBe(true);
+  });
+
+  test('fetches initial data on mount', async () => {
+    const data = [{ id: 1, done: false }];
+    const fetcher = jest.fn().mockResolvedValue(data);
+    const { result } = renderHook(() =>
+      useOptimisticMutations('todos', fetcher)
+    );
+    await act(() => new Promise(r => setTimeout(r, 50)));
+    expect(fetcher).toHaveBeenCalled();
+    expect(result.current.data).toEqual(data);
+  });
+});`,
     keyPoints: [
       "The layered approach: optimistic data = serverData + pending.reduce(). Each mutation layers on top. Removing one mutation from pending surgically un-applies it without affecting others",
       "Sequential processing ensures mutations reach the server in order — this prevents race conditions where mutation B depends on mutation A's result",
@@ -850,6 +1073,114 @@ function useCombobox({
     },
   };
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useCombobox } from './implementation';
+
+const items = [
+  { id: 1, name: 'Apple' },
+  { id: 2, name: 'Banana' },
+  { id: 3, name: 'Cherry' },
+];
+
+describe('useCombobox', () => {
+
+  test('returns all expected properties', () => {
+    const { result } = renderHook(() =>
+      useCombobox({ items, itemToString: (i) => i?.name ?? '' })
+    );
+    const hook = result.current;
+    expect(typeof hook.isOpen).toBe('boolean');
+    expect(typeof hook.highlightedIndex).toBe('number');
+    expect(hook.selectedItem).toBeNull();
+    expect(typeof hook.inputValue).toBe('string');
+    expect(typeof hook.getInputProps).toBe('function');
+    expect(typeof hook.getMenuProps).toBe('function');
+    expect(typeof hook.getItemProps).toBe('function');
+    expect(typeof hook.getLabelProps).toBe('function');
+    expect(typeof hook.getToggleProps).toBe('function');
+    expect(typeof hook.openMenu).toBe('function');
+    expect(typeof hook.closeMenu).toBe('function');
+    expect(typeof hook.setInputValue).toBe('function');
+    expect(typeof hook.setHighlightedIndex).toBe('function');
+    expect(typeof hook.selectItem).toBe('function');
+    expect(typeof hook.reset).toBe('function');
+  });
+
+  test('getInputProps returns ARIA attributes', () => {
+    const { result } = renderHook(() =>
+      useCombobox({ items, itemToString: (i) => i?.name ?? '' })
+    );
+    const inputProps = result.current.getInputProps();
+    expect(inputProps.role).toBe('combobox');
+    expect(inputProps).toHaveProperty('aria-expanded');
+    expect(inputProps).toHaveProperty('aria-controls');
+    expect(inputProps).toHaveProperty('aria-autocomplete');
+    expect(inputProps.autoComplete).toBe('off');
+  });
+
+  test('getMenuProps returns listbox role', () => {
+    const { result } = renderHook(() =>
+      useCombobox({ items, itemToString: (i) => i?.name ?? '' })
+    );
+    const menuProps = result.current.getMenuProps();
+    expect(menuProps.role).toBe('listbox');
+    expect(menuProps).toHaveProperty('id');
+  });
+
+  test('getItemProps returns option role and aria-selected', () => {
+    const { result } = renderHook(() =>
+      useCombobox({ items, itemToString: (i) => i?.name ?? '' })
+    );
+    const itemProps = result.current.getItemProps({ item: items[0], index: 0 });
+    expect(itemProps.role).toBe('option');
+    expect(itemProps).toHaveProperty('aria-selected');
+    expect(itemProps).toHaveProperty('id');
+  });
+
+  test('getLabelProps returns id and htmlFor', () => {
+    const { result } = renderHook(() =>
+      useCombobox({ items, itemToString: (i) => i?.name ?? '' })
+    );
+    const labelProps = result.current.getLabelProps();
+    expect(labelProps).toHaveProperty('id');
+    expect(labelProps).toHaveProperty('htmlFor');
+  });
+
+  test('selectItem updates selectedItem and inputValue', () => {
+    const onSelect = jest.fn();
+    const { result } = renderHook(() =>
+      useCombobox({ items, itemToString: (i) => i?.name ?? '', onSelect })
+    );
+    act(() => {
+      result.current.selectItem(items[1]);
+    });
+    expect(result.current.selectedItem).toBe(items[1]);
+    expect(result.current.inputValue).toBe('Banana');
+    expect(onSelect).toHaveBeenCalledWith(items[1]);
+  });
+
+  test('openMenu and closeMenu toggle isOpen', () => {
+    const { result } = renderHook(() =>
+      useCombobox({ items, itemToString: (i) => i?.name ?? '' })
+    );
+    expect(result.current.isOpen).toBe(false);
+    act(() => { result.current.openMenu(); });
+    expect(result.current.isOpen).toBe(true);
+    act(() => { result.current.closeMenu(); });
+    expect(result.current.isOpen).toBe(false);
+  });
+
+  test('reset clears selection and input', () => {
+    const { result } = renderHook(() =>
+      useCombobox({ items, itemToString: (i) => i?.name ?? '' })
+    );
+    act(() => { result.current.selectItem(items[0]); });
+    expect(result.current.selectedItem).toBe(items[0]);
+    act(() => { result.current.reset(); });
+    expect(result.current.selectedItem).toBeNull();
+    expect(result.current.inputValue).toBe('');
+  });
+});`,
     keyPoints: [
       "aria-activedescendant is the key ARIA attribute — it tells screen readers which option is 'focused' without actually moving DOM focus from the input. This is how all major combobox implementations work",
       "The 'prop getters' pattern (getInputProps, getItemProps) was pioneered by Downshift — consumers spread props onto their elements, giving them full rendering control while the hook manages behavior",
@@ -1021,6 +1352,118 @@ const asyncMiddleware = (store) => (next) => async (action) => {
   }
   return next(action);
 };`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useReducerWithMiddleware } from './implementation';
+
+function counterReducer(state, action) {
+  switch (action.type) {
+    case 'INCREMENT': return { count: state.count + 1 };
+    case 'DECREMENT': return { count: state.count - 1 };
+    case 'SET': return { count: action.payload };
+    default: return state;
+  }
+}
+
+describe('useReducerWithMiddleware', () => {
+
+  test('works as basic useReducer without middleware', () => {
+    const { result } = renderHook(() =>
+      useReducerWithMiddleware(counterReducer, { count: 0 })
+    );
+    expect(result.current[0]).toEqual({ count: 0 });
+    act(() => { result.current[1]({ type: 'INCREMENT' }); });
+    expect(result.current[0]).toEqual({ count: 1 });
+  });
+
+  test('middleware can observe actions (logger pattern)', () => {
+    const log = [];
+    const loggerMiddleware = (store) => (next) => (action) => {
+      log.push({ action: action.type, prevState: store.getState() });
+      const result = next(action);
+      log.push({ nextState: store.getState() });
+      return result;
+    };
+
+    const { result } = renderHook(() =>
+      useReducerWithMiddleware(counterReducer, { count: 0 }, loggerMiddleware)
+    );
+    act(() => { result.current[1]({ type: 'INCREMENT' }); });
+    expect(log.length).toBe(2);
+    expect(log[0].action).toBe('INCREMENT');
+  });
+
+  test('middleware can transform actions', () => {
+    const doubleMiddleware = (store) => (next) => (action) => {
+      if (action.type === 'INCREMENT') {
+        next(action);
+        return next(action);
+      }
+      return next(action);
+    };
+
+    const { result } = renderHook(() =>
+      useReducerWithMiddleware(counterReducer, { count: 0 }, doubleMiddleware)
+    );
+    act(() => { result.current[1]({ type: 'INCREMENT' }); });
+    expect(result.current[0]).toEqual({ count: 2 });
+  });
+
+  test('middleware can short-circuit (block) actions', () => {
+    const blockMiddleware = (store) => (next) => (action) => {
+      if (action.type === 'DECREMENT') return; // block
+      return next(action);
+    };
+
+    const { result } = renderHook(() =>
+      useReducerWithMiddleware(counterReducer, { count: 5 }, blockMiddleware)
+    );
+    act(() => { result.current[1]({ type: 'DECREMENT' }); });
+    expect(result.current[0]).toEqual({ count: 5 });
+    act(() => { result.current[1]({ type: 'INCREMENT' }); });
+    expect(result.current[0]).toEqual({ count: 6 });
+  });
+
+  test('multiple middlewares compose in order (first wraps outermost)', () => {
+    const order = [];
+    const mw1 = (store) => (next) => (action) => {
+      order.push('mw1-before');
+      const result = next(action);
+      order.push('mw1-after');
+      return result;
+    };
+    const mw2 = (store) => (next) => (action) => {
+      order.push('mw2-before');
+      const result = next(action);
+      order.push('mw2-after');
+      return result;
+    };
+
+    const { result } = renderHook(() =>
+      useReducerWithMiddleware(counterReducer, { count: 0 }, mw1, mw2)
+    );
+    act(() => { result.current[1]({ type: 'INCREMENT' }); });
+    expect(order).toEqual(['mw1-before', 'mw2-before', 'mw2-after', 'mw1-after']);
+  });
+
+  test('thunk-like middleware enables function actions', () => {
+    const thunkMiddleware = (store) => (next) => (action) => {
+      if (typeof action === 'function') {
+        return action(store.dispatch, store.getState);
+      }
+      return next(action);
+    };
+
+    const { result } = renderHook(() =>
+      useReducerWithMiddleware(counterReducer, { count: 0 }, thunkMiddleware)
+    );
+    act(() => {
+      result.current[1]((dispatch, getState) => {
+        dispatch({ type: 'SET', payload: 42 });
+      });
+    });
+    expect(result.current[0]).toEqual({ count: 42 });
+  });
+});`,
     keyPoints: [
       "The middleware signature (store) => (next) => (action) is a triple-nested closure — each layer captures different context. This currying pattern is identical to Redux middleware and enables composition",
       "Right-to-left composition means the first middleware in the array is the outermost wrapper — it sees the action first and the final state last. This matches Redux's applyMiddleware behavior exactly",
@@ -1290,6 +1733,70 @@ function useCollaborativeState({ roomId, initialState, userId, wsUrl }) {
 
   return { state, update, peers, isConnected, pendingOps, conflicts };
 }`,
+    testCode: `import { createClock, incrementClock, mergeClock, happenedBefore, areConcurrent } from './implementation';
+
+describe('Vector Clock Utilities', () => {
+
+  test('createClock initializes a clock for a user with count 0', () => {
+    const clock = createClock('alice');
+    expect(clock).toEqual({ alice: 0 });
+  });
+
+  test('incrementClock increments the specified user counter', () => {
+    const clock = createClock('alice');
+    const next = incrementClock(clock, 'alice');
+    expect(next.alice).toBe(1);
+    const next2 = incrementClock(next, 'alice');
+    expect(next2.alice).toBe(2);
+  });
+
+  test('incrementClock initializes counter for new user', () => {
+    const clock = { alice: 3 };
+    const next = incrementClock(clock, 'bob');
+    expect(next.bob).toBe(1);
+    expect(next.alice).toBe(3);
+  });
+
+  test('incrementClock does not mutate original clock', () => {
+    const clock = { alice: 1 };
+    incrementClock(clock, 'alice');
+    expect(clock.alice).toBe(1);
+  });
+
+  test('mergeClock takes max of each user counter', () => {
+    const a = { alice: 3, bob: 2 };
+    const b = { alice: 1, bob: 5, carol: 1 };
+    const merged = mergeClock(a, b);
+    expect(merged.alice).toBe(3);
+    expect(merged.bob).toBe(5);
+    expect(merged.carol).toBe(1);
+  });
+
+  test('happenedBefore returns true when a strictly precedes b', () => {
+    const a = { alice: 1, bob: 1 };
+    const b = { alice: 2, bob: 2 };
+    expect(happenedBefore(a, b)).toBe(true);
+    expect(happenedBefore(b, a)).toBe(false);
+  });
+
+  test('happenedBefore returns false for identical clocks', () => {
+    const a = { alice: 2, bob: 3 };
+    const b = { alice: 2, bob: 3 };
+    expect(happenedBefore(a, b)).toBe(false);
+  });
+
+  test('areConcurrent detects concurrent edits', () => {
+    const a = { alice: 3, bob: 2 };
+    const b = { alice: 2, bob: 4 };
+    expect(areConcurrent(a, b)).toBe(true);
+  });
+
+  test('areConcurrent returns false when one happened before the other', () => {
+    const a = { alice: 1, bob: 1 };
+    const b = { alice: 2, bob: 2 };
+    expect(areConcurrent(a, b)).toBe(false);
+  });
+});`,
     keyPoints: [
       "Vector clocks track causality: if Alice's clock is {alice:3, bob:2} and Bob's is {alice:2, bob:4}, their edits are concurrent — neither fully 'happened before' the other. This is how distributed systems detect conflicts without a central server",
       "Last-Writer-Wins (LWW) with field-level granularity means concurrent edits to DIFFERENT fields both apply, but concurrent edits to the SAME field use timestamp as tiebreaker. This is simpler than OT or CRDTs but works well for most collaborative UIs",
@@ -1545,6 +2052,85 @@ function render(element, container, callback) {
   reconciler.updateContainer(element, container._rootFiber, null, callback);
   return container;
 }`,
+    testCode: `import { TreeNode } from './implementation';
+
+describe('TreeNode', () => {
+
+  test('constructor sets type and props', () => {
+    const node = new TreeNode('box', { padding: 10 });
+    expect(node.type).toBe('box');
+    expect(node.props.padding).toBe(10);
+    expect(node.children).toEqual([]);
+    expect(node.parent).toBeNull();
+  });
+
+  test('constructor strips children from props', () => {
+    const node = new TreeNode('box', { children: ['a', 'b'], color: 'red' });
+    expect(node.props.children).toBeUndefined();
+    expect(node.props.color).toBe('red');
+  });
+
+  test('appendChild adds child and sets parent', () => {
+    const parent = new TreeNode('root', {});
+    const child = new TreeNode('text', {});
+    parent.appendChild(child);
+    expect(parent.children).toContain(child);
+    expect(child.parent).toBe(parent);
+  });
+
+  test('removeChild removes child and clears parent', () => {
+    const parent = new TreeNode('root', {});
+    const child = new TreeNode('text', {});
+    parent.appendChild(child);
+    parent.removeChild(child);
+    expect(parent.children).not.toContain(child);
+    expect(child.parent).toBeNull();
+  });
+
+  test('insertBefore places child before the specified sibling', () => {
+    const parent = new TreeNode('root', {});
+    const a = new TreeNode('a', {});
+    const b = new TreeNode('b', {});
+    const c = new TreeNode('c', {});
+    parent.appendChild(a);
+    parent.appendChild(c);
+    parent.insertBefore(b, c);
+    expect(parent.children[0]).toBe(a);
+    expect(parent.children[1]).toBe(b);
+    expect(parent.children[2]).toBe(c);
+    expect(b.parent).toBe(parent);
+  });
+
+  test('insertBefore appends if beforeChild is not found', () => {
+    const parent = new TreeNode('root', {});
+    const a = new TreeNode('a', {});
+    const orphan = new TreeNode('orphan', {});
+    const newChild = new TreeNode('new', {});
+    parent.appendChild(a);
+    parent.insertBefore(newChild, orphan);
+    expect(parent.children[parent.children.length - 1]).toBe(newChild);
+  });
+
+  test('serialize produces correct tree structure', () => {
+    const root = new TreeNode('root', {});
+    const box = new TreeNode('box', { padding: 5 });
+    const text = new TreeNode('#text', {});
+    text.text = 'Hello';
+    box.appendChild(text);
+    root.appendChild(box);
+    const serialized = root.serialize();
+    expect(serialized.type).toBe('root');
+    expect(serialized.children[0].type).toBe('box');
+    expect(serialized.children[0].props.padding).toBe(5);
+    expect(serialized.children[0].children[0]).toBe('Hello');
+  });
+
+  test('serialize returns text string for text nodes', () => {
+    const node = new TreeNode('#text', {});
+    node.text = 'world';
+    expect(node.serialize()).toBe('world');
+  });
+});`,
     keyPoints: [
       "The host config is the contract between React's reconciler and your target environment. createInstance is your 'document.createElement', appendChild is your 'node.appendChild'. React calls these during the commit phase",
       "prepareUpdate returns a diff object (or null for no changes) — this is the optimization that prevents unnecessary mutations. commitUpdate then applies only the diff, not a full replacement",
@@ -1774,6 +2360,91 @@ class ErrorBoundary extends React.Component {
     return this.props.children;
   }
 }`,
+    testCode: `import React from 'react';
+import { render, screen } from '@testing-library/react';
+import { createSDUIRenderer, evaluateConditions } from './implementation';
+
+describe('evaluateConditions', () => {
+
+  test('returns true when conditions is null or empty', () => {
+    expect(evaluateConditions(null, {})).toBe(true);
+    expect(evaluateConditions([], {})).toBe(true);
+    expect(evaluateConditions(undefined, {})).toBe(true);
+  });
+
+  test('equals condition matches value', () => {
+    const conditions = [{ field: 'user.isPro', equals: true }];
+    expect(evaluateConditions(conditions, { user: { isPro: true } })).toBe(true);
+    expect(evaluateConditions(conditions, { user: { isPro: false } })).toBe(false);
+  });
+
+  test('notEquals condition works', () => {
+    const conditions = [{ field: 'status', notEquals: 'banned' }];
+    expect(evaluateConditions(conditions, { status: 'active' })).toBe(true);
+    expect(evaluateConditions(conditions, { status: 'banned' })).toBe(false);
+  });
+
+  test('in condition checks array membership', () => {
+    const conditions = [{ field: 'role', in: ['admin', 'editor'] }];
+    expect(evaluateConditions(conditions, { role: 'admin' })).toBe(true);
+    expect(evaluateConditions(conditions, { role: 'viewer' })).toBe(false);
+  });
+
+  test('exists condition checks for presence', () => {
+    const conditions = [{ field: 'profile.avatar', exists: true }];
+    expect(evaluateConditions(conditions, { profile: { avatar: 'url' } })).toBe(true);
+    expect(evaluateConditions(conditions, { profile: {} })).toBe(false);
+  });
+
+  test('multiple conditions are ANDed together', () => {
+    const conditions = [
+      { field: 'age', gt: 18 },
+      { field: 'role', equals: 'member' },
+    ];
+    expect(evaluateConditions(conditions, { age: 25, role: 'member' })).toBe(true);
+    expect(evaluateConditions(conditions, { age: 25, role: 'guest' })).toBe(false);
+    expect(evaluateConditions(conditions, { age: 16, role: 'member' })).toBe(false);
+  });
+});
+
+describe('createSDUIRenderer', () => {
+
+  test('renders registered components from descriptor', () => {
+    const Text = ({ text }) => <span data-testid="text">{text}</span>;
+    const { SDUIRoot, ActionProvider } = createSDUIRenderer({ Text });
+
+    const response = {
+      screen: { type: 'Text', props: { text: 'Hello' } },
+    };
+
+    render(
+      <ActionProvider handlers={{}}>
+        <SDUIRoot response={response} userData={{}} />
+      </ActionProvider>
+    );
+    expect(screen.getByTestId('text').textContent).toBe('Hello');
+  });
+
+  test('renders fallback for unknown component types', () => {
+    const Text = ({ text }) => <span data-testid="fallback-text">{text}</span>;
+    const { SDUIRoot, ActionProvider } = createSDUIRenderer({ Text });
+
+    const response = {
+      screen: {
+        type: 'UnknownWidget',
+        props: {},
+        fallback: { type: 'Text', props: { text: 'Fallback shown' } },
+      },
+    };
+
+    render(
+      <ActionProvider handlers={{}}>
+        <SDUIRoot response={response} userData={{}} />
+      </ActionProvider>
+    );
+    expect(screen.getByTestId('fallback-text').textContent).toBe('Fallback shown');
+  });
+});`,
     keyPoints: [
       "The component registry (Map<string, Component>) is the bridge between server descriptors and React components — this is exactly how Airbnb's Ghost Platform resolves SectionComponentType to renderers",
       "Recursive rendering (SDUINode renders children as SDUINodes) enables arbitrarily nested layouts from a flat JSON response — the server controls the entire component tree depth",
@@ -1990,6 +2661,87 @@ function useErrorBoundary() {
     resetBoundary: ctx.resetBoundary,
   };
 }`,
+    testCode: `import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { ErrorBoundary, useErrorBoundary } from './implementation';
+
+function ThrowingChild({ shouldThrow = true }) {
+  if (shouldThrow) throw new Error('Test error');
+  return <div data-testid="child">OK</div>;
+}
+
+describe('ErrorBoundary', () => {
+
+  // Suppress console.error for expected errors
+  const origError = console.error;
+  beforeAll(() => { console.error = jest.fn(); });
+  afterAll(() => { console.error = origError; });
+
+  test('renders children when there is no error', () => {
+    render(
+      <ErrorBoundary fallback={() => <div>Error</div>}>
+        <div data-testid="content">Hello</div>
+      </ErrorBoundary>
+    );
+    expect(screen.getByTestId('content').textContent).toBe('Hello');
+  });
+
+  test('renders fallback when child throws', () => {
+    render(
+      <ErrorBoundary fallback={({ error }) => <div data-testid="fallback">{error.message}</div>}>
+        <ThrowingChild />
+      </ErrorBoundary>
+    );
+    expect(screen.getByTestId('fallback').textContent).toBe('Test error');
+  });
+
+  test('fallback receives resetErrorBoundary function', () => {
+    render(
+      <ErrorBoundary fallback={({ resetErrorBoundary }) => (
+        <button data-testid="retry" onClick={resetErrorBoundary}>Retry</button>
+      )}>
+        <ThrowingChild />
+      </ErrorBoundary>
+    );
+    expect(screen.getByTestId('retry')).toBeTruthy();
+  });
+
+  test('fallback receives retryCount', () => {
+    render(
+      <ErrorBoundary fallback={({ retryCount }) => (
+        <div data-testid="count">{retryCount}</div>
+      )}>
+        <ThrowingChild />
+      </ErrorBoundary>
+    );
+    expect(screen.getByTestId('count')).toBeTruthy();
+  });
+
+  test('calls onError callback when child throws', () => {
+    const onError = jest.fn();
+    render(
+      <ErrorBoundary fallback={() => <div>Error</div>} onError={onError}>
+        <ThrowingChild />
+      </ErrorBoundary>
+    );
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toBeInstanceOf(Error);
+    expect(onError.mock.calls[0][0].message).toBe('Test error');
+  });
+
+  test('nested error boundaries isolate failures', () => {
+    render(
+      <ErrorBoundary fallback={() => <div data-testid="outer-fallback">Outer Error</div>}>
+        <div data-testid="sibling">Sibling OK</div>
+        <ErrorBoundary fallback={() => <div data-testid="inner-fallback">Inner Error</div>}>
+          <ThrowingChild />
+        </ErrorBoundary>
+      </ErrorBoundary>
+    );
+    expect(screen.getByTestId('inner-fallback').textContent).toBe('Inner Error');
+    expect(screen.getByTestId('sibling').textContent).toBe('Sibling OK');
+  });
+});`,
     keyPoints: [
       "ErrorBoundaries MUST be class components — React only exposes getDerivedStateFromError and componentDidCatch for classes. There is no hook equivalent. This is one of the last valid uses of class components in React",
       "resetKeys pattern (reset when external values change) is from react-error-boundary — when a user navigates to a new route, the boundary should auto-clear rather than showing a stale error",
@@ -2192,6 +2944,68 @@ function Cannot({ action, resource, data, children, fallback = null }) {
   const { cannot } = usePermission();
   return cannot(action, resource, data) ? children : fallback;
 }`,
+    testCode: `import { PermissionEngine } from './implementation';
+
+describe('PermissionEngine', () => {
+
+  const user = { id: 'u1', roles: ['manager'], teamId: 't1' };
+  const permissions = [
+    { action: 'read', resource: 'Post' },
+    { action: 'edit', resource: 'Post', condition: { authorId: 'u1' } },
+    { action: 'delete', resource: 'Post', condition: { authorId: 'u1' } },
+    { action: 'manage', resource: 'Team', condition: { teamId: 't1' } },
+  ];
+  const roleHierarchy = { admin: ['manager'], manager: ['user'], user: [] };
+
+  test('can() returns true for a matching permission', () => {
+    const engine = new PermissionEngine(user, permissions, roleHierarchy);
+    expect(engine.can('read', 'Post')).toBe(true);
+  });
+
+  test('cannot() returns true when permission is missing', () => {
+    const engine = new PermissionEngine(user, permissions, roleHierarchy);
+    expect(engine.cannot('delete', 'User')).toBe(true);
+  });
+
+  test('condition-based permission matches when data satisfies condition', () => {
+    const engine = new PermissionEngine(user, permissions, roleHierarchy);
+    expect(engine.can('edit', 'Post', { authorId: 'u1' })).toBe(true);
+  });
+
+  test('condition-based permission fails when data does not match', () => {
+    const engine = new PermissionEngine(user, permissions, roleHierarchy);
+    expect(engine.can('edit', 'Post', { authorId: 'other-user' })).toBe(false);
+  });
+
+  test('manage action expands to CRUD actions', () => {
+    const engine = new PermissionEngine(user, permissions, roleHierarchy);
+    expect(engine.can('create', 'Team', { teamId: 't1' })).toBe(true);
+    expect(engine.can('read', 'Team', { teamId: 't1' })).toBe(true);
+    expect(engine.can('edit', 'Team', { teamId: 't1' })).toBe(true);
+    expect(engine.can('delete', 'Team', { teamId: 't1' })).toBe(true);
+  });
+
+  test('manage expansion respects conditions', () => {
+    const engine = new PermissionEngine(user, permissions, roleHierarchy);
+    expect(engine.can('edit', 'Team', { teamId: 'other-team' })).toBe(false);
+  });
+
+  test('wildcard action matches any action', () => {
+    const superPerms = [{ action: '*', resource: 'Post' }];
+    const engine = new PermissionEngine(user, superPerms);
+    expect(engine.can('read', 'Post')).toBe(true);
+    expect(engine.can('delete', 'Post')).toBe(true);
+    expect(engine.can('anything', 'Post')).toBe(true);
+  });
+
+  test('wildcard resource matches any resource', () => {
+    const superPerms = [{ action: 'read', resource: '*' }];
+    const engine = new PermissionEngine(user, superPerms);
+    expect(engine.can('read', 'Post')).toBe(true);
+    expect(engine.can('read', 'Team')).toBe(true);
+    expect(engine.can('edit', 'Post')).toBe(false);
+  });
+});`,
     keyPoints: [
       "The permission engine separates authorization logic from React — it's a pure class that can be tested independently, reused on the server, and shared across components. CASL uses the same architecture",
       "'manage' action expanding to all CRUD actions mirrors CASL's convention and simplifies admin role definitions — one permission rule covers create, read, edit, delete, and list",
@@ -2454,6 +3268,78 @@ function Toolbar() {
     </div>
   );
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useRovingTabindex } from './implementation';
+
+const items = [
+  { id: 'bold', label: 'Bold', disabled: false },
+  { id: 'italic', label: 'Italic', disabled: false },
+  { id: 'strike', label: 'Strikethrough', disabled: true },
+  { id: 'underline', label: 'Underline', disabled: false },
+];
+
+describe('useRovingTabindex', () => {
+
+  test('returns getRovingProps, focusedIndex, and setFocusedIndex', () => {
+    const { result } = renderHook(() =>
+      useRovingTabindex({ items, orientation: 'horizontal' })
+    );
+    expect(typeof result.current.getRovingProps).toBe('function');
+    expect(typeof result.current.focusedIndex).toBe('number');
+    expect(typeof result.current.setFocusedIndex).toBe('function');
+  });
+
+  test('getRovingProps returns tabIndex 0 for focused, -1 for others', () => {
+    const { result } = renderHook(() =>
+      useRovingTabindex({ items, orientation: 'horizontal' })
+    );
+    const focused = result.current.focusedIndex;
+    const propsActive = result.current.getRovingProps(focused);
+    const propsOther = result.current.getRovingProps(focused === 0 ? 1 : 0);
+    expect(propsActive.tabIndex).toBe(0);
+    expect(propsOther.tabIndex).toBe(-1);
+  });
+
+  test('getRovingProps returns ref, onKeyDown, and onClick', () => {
+    const { result } = renderHook(() =>
+      useRovingTabindex({ items, orientation: 'horizontal' })
+    );
+    const props = result.current.getRovingProps(0);
+    expect(typeof props.ref).toBe('function');
+    expect(typeof props.onKeyDown).toBe('function');
+    expect(typeof props.onClick).toBe('function');
+  });
+
+  test('initializes to first non-disabled item', () => {
+    const disabledFirst = [
+      { id: 'a', label: 'A', disabled: true },
+      { id: 'b', label: 'B', disabled: false },
+      { id: 'c', label: 'C', disabled: false },
+    ];
+    const { result } = renderHook(() =>
+      useRovingTabindex({ items: disabledFirst, orientation: 'horizontal', initialIndex: 0 })
+    );
+    expect(result.current.focusedIndex).toBe(1);
+  });
+
+  test('setFocusedIndex updates the focused item', () => {
+    const { result } = renderHook(() =>
+      useRovingTabindex({ items, orientation: 'horizontal' })
+    );
+    act(() => {
+      result.current.setFocusedIndex(3);
+    });
+    expect(result.current.focusedIndex).toBe(3);
+    expect(result.current.getRovingProps(3).tabIndex).toBe(0);
+  });
+
+  test('default focusedIndex is 0 when first item is enabled', () => {
+    const { result } = renderHook(() =>
+      useRovingTabindex({ items, orientation: 'horizontal' })
+    );
+    expect(result.current.focusedIndex).toBe(0);
+  });
+});`,
     keyPoints: [
       "Roving tabindex keeps the entire composite widget as a single Tab stop — pressing Tab moves focus INTO the widget (to the active item), and pressing Tab again moves focus OUT. Arrow keys handle intra-widget navigation. This is the WAI-ARIA APG recommended pattern",
       "The findNextEnabled helper with modular arithmetic handles wrapping seamlessly — when direction is +1 and index exceeds length, modulo wraps to 0, and when direction is -1, the ((n % len) + len) % len formula handles negative indices correctly",
@@ -2729,6 +3615,88 @@ function useRetry({ fn, retryConfig = {}, circuitBreaker }) {
 
   return { execute, state, abort, reset };
 }`,
+    testCode: `import { createCircuitBreaker, calculateDelay } from './implementation';
+
+describe('Circuit Breaker', () => {
+
+  test('starts in closed state', () => {
+    const cb = createCircuitBreaker({ failureThreshold: 3, cooldownMs: 1000 });
+    expect(cb.getState().state).toBe('closed');
+    expect(cb.canExecute()).toBe(true);
+  });
+
+  test('remains closed below failure threshold', () => {
+    const cb = createCircuitBreaker({ failureThreshold: 3, cooldownMs: 1000 });
+    cb.recordFailure();
+    cb.recordFailure();
+    expect(cb.getState().state).toBe('closed');
+    expect(cb.canExecute()).toBe(true);
+  });
+
+  test('opens after reaching failure threshold', () => {
+    const cb = createCircuitBreaker({ failureThreshold: 3, cooldownMs: 1000 });
+    cb.recordFailure();
+    cb.recordFailure();
+    cb.recordFailure();
+    expect(cb.getState().state).toBe('open');
+    expect(cb.canExecute()).toBe(false);
+  });
+
+  test('resets failure count on success', () => {
+    const cb = createCircuitBreaker({ failureThreshold: 3, cooldownMs: 1000 });
+    cb.recordFailure();
+    cb.recordFailure();
+    cb.recordSuccess();
+    expect(cb.getState().state).toBe('closed');
+    expect(cb.getState().failures).toBe(0);
+  });
+
+  test('reset() restores to closed state', () => {
+    const cb = createCircuitBreaker({ failureThreshold: 2, cooldownMs: 50000 });
+    cb.recordFailure();
+    cb.recordFailure();
+    expect(cb.getState().state).toBe('open');
+    cb.reset();
+    expect(cb.getState().state).toBe('closed');
+    expect(cb.canExecute()).toBe(true);
+  });
+
+  test('subscribe notifies on state changes', () => {
+    const cb = createCircuitBreaker({ failureThreshold: 2, cooldownMs: 1000 });
+    const listener = jest.fn();
+    const unsub = cb.subscribe(listener);
+    cb.recordFailure();
+    expect(listener).toHaveBeenCalledTimes(1);
+    cb.recordFailure();
+    expect(listener).toHaveBeenCalledTimes(2);
+    unsub();
+    cb.reset();
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('calculateDelay', () => {
+
+  test('calculates exponential delay', () => {
+    const delay = calculateDelay({ attempt: 0, baseDelay: 1000, multiplier: 2, maxDelay: 30000, jitter: false });
+    expect(delay).toBe(1000);
+    const delay2 = calculateDelay({ attempt: 3, baseDelay: 1000, multiplier: 2, maxDelay: 30000, jitter: false });
+    expect(delay2).toBe(8000);
+  });
+
+  test('caps delay at maxDelay', () => {
+    const delay = calculateDelay({ attempt: 10, baseDelay: 1000, multiplier: 2, maxDelay: 10000, jitter: false });
+    expect(delay).toBe(10000);
+  });
+
+  test('jitter produces value between 0 and capped delay', () => {
+    for (let i = 0; i < 20; i++) {
+      const delay = calculateDelay({ attempt: 2, baseDelay: 1000, multiplier: 2, maxDelay: 10000, jitter: true });
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThanOrEqual(4000);
+    }
+  });
+});`,
     keyPoints: [
       "The circuit breaker state machine has three states: 'closed' (normal), 'open' (rejecting all requests), and 'half-open' (allowing one test request). The open-to-half-open transition is time-based, checked lazily in canExecute() rather than with a timer — this avoids unnecessary timers and matches the Hystrix pattern",
       "Full jitter (Math.random() * cappedDelay) prevents the thundering herd problem — if 1000 clients all fail at the same time, their retries will spread across the full delay window instead of all hitting the server at exactly baseDelay * 2^attempt. AWS's Marc Brooker showed this outperforms both no-jitter and equal-jitter strategies",
@@ -2961,6 +3929,72 @@ function useService(token) {
 //     return fetch(url).then(r => r.json());
 //   }
 // }`,
+    testCode: `import { createContainer } from './implementation';
+
+describe('Dependency Injection Container', () => {
+
+  test('register and resolve a transient service', () => {
+    const container = createContainer();
+    container.register('greeting', () => 'hello');
+    expect(container.resolve('greeting')).toBe('hello');
+  });
+
+  test('transient lifetime creates a new instance each time', () => {
+    const container = createContainer();
+    container.register('obj', () => ({ id: Math.random() }), { lifetime: 'transient' });
+    const a = container.resolve('obj');
+    const b = container.resolve('obj');
+    expect(a).not.toBe(b);
+    expect(a.id).not.toBe(b.id);
+  });
+
+  test('singleton lifetime returns the same instance', () => {
+    const container = createContainer();
+    container.register('single', () => ({ id: Math.random() }), { lifetime: 'singleton' });
+    const a = container.resolve('single');
+    const b = container.resolve('single');
+    expect(a).toBe(b);
+  });
+
+  test('factory receives a resolver for dependencies', () => {
+    const container = createContainer();
+    container.register('logger', () => ({ log: jest.fn() }), { lifetime: 'singleton' });
+    container.register('api', (resolve) => ({
+      logger: resolve('logger'),
+      fetch: jest.fn(),
+    }), { lifetime: 'singleton' });
+    const api = container.resolve('api');
+    expect(api.logger).toBe(container.resolve('logger'));
+  });
+
+  test('throws on unregistered token', () => {
+    const container = createContainer();
+    expect(() => container.resolve('unknown')).toThrow();
+  });
+
+  test('detects circular dependencies', () => {
+    const container = createContainer();
+    container.register('a', (resolve) => resolve('b'));
+    container.register('b', (resolve) => resolve('a'));
+    expect(() => container.resolve('a')).toThrow(/[Cc]ircular/);
+  });
+
+  test('createScope inherits parent registrations', () => {
+    const container = createContainer();
+    container.register('val', () => 42, { lifetime: 'singleton' });
+    const scope = container.createScope();
+    expect(scope.resolve('val')).toBe(42);
+  });
+
+  test('scoped override does not affect parent', () => {
+    const container = createContainer();
+    container.register('svc', () => 'real', { lifetime: 'singleton' });
+    const scope = container.createScope();
+    scope.register('svc', () => 'mock', { lifetime: 'singleton' });
+    expect(scope.resolve('svc')).toBe('mock');
+    expect(container.resolve('svc')).toBe('real');
+  });
+});`,
     keyPoints: [
       "The three lifetime scopes map to real DI patterns: 'singleton' shares one instance across the entire container (database connections, loggers), 'transient' creates a fresh instance every resolve (request-scoped IDs, stateless utilities), and 'scoped' creates one instance per scope (per-request context in a server, per-test instance in tests)",
       "Circular dependency detection uses a Set that tracks tokens being resolved in the current call stack — if the same token appears twice during resolution, it throws immediately with the full dependency chain. This prevents infinite loops and gives developers a clear error message showing the cycle path",
@@ -3229,6 +4263,86 @@ function createTabSync(channelName) {
 //     </div>
 //   );
 // }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { createTabSync } from './implementation';
+
+// Mock BroadcastChannel for test environment
+class MockBroadcastChannel {
+  constructor(name) { this.name = name; this.onmessage = null; }
+  postMessage() {}
+  close() {}
+}
+if (typeof globalThis.BroadcastChannel === 'undefined') {
+  globalThis.BroadcastChannel = MockBroadcastChannel;
+}
+
+describe('Multi-Tab State Synchronization', () => {
+
+  test('createTabSync returns useSyncedState, useIsLeader, and destroy', () => {
+    const sync = createTabSync('test-channel-1');
+    expect(typeof sync.useSyncedState).toBe('function');
+    expect(typeof sync.useIsLeader).toBe('function');
+    expect(typeof sync.destroy).toBe('function');
+    sync.destroy();
+  });
+
+  test('useSyncedState returns [value, setter] tuple with initial value', () => {
+    const sync = createTabSync('test-channel-2');
+    const { result } = renderHook(() => sync.useSyncedState('theme', 'light'));
+    expect(result.current).toHaveLength(2);
+    expect(result.current[0]).toBe('light');
+    expect(typeof result.current[1]).toBe('function');
+    sync.destroy();
+  });
+
+  test('useSyncedState setter updates local state', () => {
+    const sync = createTabSync('test-channel-3');
+    const { result } = renderHook(() => sync.useSyncedState('color', 'blue'));
+    act(() => {
+      result.current[1]('red');
+    });
+    expect(result.current[0]).toBe('red');
+    sync.destroy();
+  });
+
+  test('useSyncedState setter supports functional updates', () => {
+    const sync = createTabSync('test-channel-4');
+    const { result } = renderHook(() => sync.useSyncedState('count', 0));
+    act(() => {
+      result.current[1](prev => prev + 1);
+    });
+    expect(result.current[0]).toBe(1);
+    act(() => {
+      result.current[1](prev => prev + 10);
+    });
+    expect(result.current[0]).toBe(11);
+    sync.destroy();
+  });
+
+  test('useIsLeader returns a boolean', () => {
+    const sync = createTabSync('test-channel-5');
+    const { result } = renderHook(() => sync.useIsLeader());
+    expect(typeof result.current).toBe('boolean');
+    sync.destroy();
+  });
+
+  test('destroy can be called without error', () => {
+    const sync = createTabSync('test-channel-6');
+    expect(() => sync.destroy()).not.toThrow();
+  });
+
+  test('multiple synced states are independent', () => {
+    const sync = createTabSync('test-channel-7');
+    const { result: r1 } = renderHook(() => sync.useSyncedState('a', 1));
+    const { result: r2 } = renderHook(() => sync.useSyncedState('b', 2));
+    expect(r1.current[0]).toBe(1);
+    expect(r2.current[0]).toBe(2);
+    act(() => { r1.current[1](10); });
+    expect(r1.current[0]).toBe(10);
+    expect(r2.current[0]).toBe(2);
+    sync.destroy();
+  });
+});`,
     keyPoints: [
       "Leader election via timeout (broadcast ELECTION, wait 200ms for ACK, declare self leader if none) is a simplified Bully algorithm — the same approach used by distributed systems, adapted for browser tabs where latency is near-zero",
       "The beforeunload event triggers LEADER_RESIGN so remaining tabs can immediately elect a new leader instead of waiting for a heartbeat timeout — this provides near-instant failover when the leader tab closes",
@@ -3474,6 +4588,108 @@ function useInvalidateLoader(loader, params = {}) {
 //     </LoaderProvider>
 //   );
 // }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { createLoader, useLoaderData, LoaderProvider } from './implementation';
+import React, { Suspense } from 'react';
+import { render, screen } from '@testing-library/react';
+
+describe('Isomorphic Data Loader', () => {
+
+  test('createLoader returns an object with id and fetchFn', () => {
+    const fetchFn = jest.fn();
+    const loader = createLoader(fetchFn);
+    expect(loader).toHaveProperty('id');
+    expect(loader).toHaveProperty('fetchFn', fetchFn);
+    expect(typeof loader.id).toBe('string');
+  });
+
+  test('each createLoader call produces a unique id', () => {
+    const a = createLoader(jest.fn());
+    const b = createLoader(jest.fn());
+    expect(a.id).not.toBe(b.id);
+  });
+
+  test('useLoaderData throws without LoaderProvider', () => {
+    const loader = createLoader(async () => 'data');
+    expect(() => {
+      renderHook(() => useLoaderData(loader, {}));
+    }).toThrow();
+  });
+
+  test('useLoaderData resolves data from fetchFn via Suspense', async () => {
+    const loader = createLoader(async () => ({ name: 'Alice' }));
+
+    function Inner() {
+      const data = useLoaderData(loader, {});
+      return <div data-testid="result">{data.name}</div>;
+    }
+
+    render(
+      <LoaderProvider isServer={false}>
+        <Suspense fallback={<div data-testid="loading">Loading</div>}>
+          <Inner />
+        </Suspense>
+      </LoaderProvider>
+    );
+
+    expect(screen.getByTestId('loading')).toBeTruthy();
+    const result = await screen.findByTestId('result');
+    expect(result.textContent).toBe('Alice');
+  });
+
+  test('deduplication: same loader+params only fetches once', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({ val: 1 });
+    const loader = createLoader(fetchFn);
+
+    function A() {
+      useLoaderData(loader, { id: 'x' });
+      return null;
+    }
+    function B() {
+      useLoaderData(loader, { id: 'x' });
+      return null;
+    }
+
+    render(
+      <LoaderProvider isServer={false}>
+        <Suspense fallback={<div>Loading</div>}>
+          <A />
+          <B />
+        </Suspense>
+      </LoaderProvider>
+    );
+
+    // Wait for resolution
+    await act(() => new Promise(r => setTimeout(r, 50)));
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  test('LoaderProvider hydrates from serializedData without refetch', async () => {
+    const fetchFn = jest.fn().mockResolvedValue({ val: 'fresh' });
+    const loader = createLoader(fetchFn);
+    const cacheKey = \\\`\\\${loader.id}:\\\${JSON.stringify({ id: '1' })}\\\`;
+
+    const serializedData = {
+      [cacheKey]: { value: { val: 'cached' }, timestamp: Date.now() },
+    };
+
+    function Inner() {
+      const data = useLoaderData(loader, { id: '1' });
+      return <div data-testid="result">{data.val}</div>;
+    }
+
+    render(
+      <LoaderProvider isServer={false} serializedData={serializedData}>
+        <Suspense fallback={<div>Loading</div>}>
+          <Inner />
+        </Suspense>
+      </LoaderProvider>
+    );
+
+    expect(screen.getByTestId('result').textContent).toBe('cached');
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+});`,
     keyPoints: [
       "Throwing promises for Suspense integration is the core pattern React uses internally — when useLoaderData throws a promise, the nearest Suspense boundary catches it, shows the fallback, and re-renders when the promise resolves",
       "Deduplication via the pending Map ensures that if UserProfile and UserAvatar both call useLoaderData(userLoader, { id: '123' }), only one network request fires. The same in-flight promise is thrown for both, and both resolve together",

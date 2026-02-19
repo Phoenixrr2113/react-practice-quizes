@@ -6,6 +6,10 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  server: {
+    // SPA fallback — all routes serve index.html so React Router handles them
+    historyApiFallback: true,
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

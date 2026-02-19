@@ -30,7 +30,7 @@ export function ChallengeViewRoute() {
     <ChallengeView
       challenge={challenge}
       onBack={() => navigate('/')}
-      onComplete={() => markComplete(challenge.id)}
+      onComplete={(seconds: number) => markComplete(challenge.id, seconds)}
       isCompleted={completedIds.has(challenge.id)}
     />
   );

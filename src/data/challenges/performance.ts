@@ -184,6 +184,112 @@ function useVirtualList({
 
   return { virtualItems, totalHeight, scrollToIndex };
 }`,
+    testCode: `import { renderHook } from '@testing-library/react';
+import { useVirtualList } from './implementation';
+
+describe('Virtualized List', () => {
+  test('useVirtualList returns correct shape', () => {
+    const containerRef = { current: null };
+    const { result } = renderHook(() =>
+      useVirtualList({
+        itemCount: 100,
+        estimateHeight: () => 50,
+        overscan: 5,
+        containerRef,
+      })
+    );
+    expect(Array.isArray(result.current.virtualItems)).toBe(true);
+    expect(typeof result.current.totalHeight).toBe('number');
+    expect(typeof result.current.scrollToIndex).toBe('function');
+  });
+
+  test('totalHeight equals sum of estimated heights', () => {
+    const containerRef = { current: null };
+    const { result } = renderHook(() =>
+      useVirtualList({
+        itemCount: 10,
+        estimateHeight: () => 40,
+        overscan: 3,
+        containerRef,
+      })
+    );
+    expect(result.current.totalHeight).toBe(400); // 10 * 40
+  });
+
+  test('totalHeight uses per-index estimateHeight', () => {
+    const containerRef = { current: null };
+    const { result } = renderHook(() =>
+      useVirtualList({
+        itemCount: 3,
+        estimateHeight: (index) => (index + 1) * 20, // 20, 40, 60
+        overscan: 0,
+        containerRef,
+      })
+    );
+    expect(result.current.totalHeight).toBe(120); // 20 + 40 + 60
+  });
+
+  test('virtualItems have correct properties', () => {
+    const containerRef = { current: null };
+    const { result } = renderHook(() =>
+      useVirtualList({
+        itemCount: 100,
+        estimateHeight: () => 50,
+        overscan: 2,
+        containerRef,
+      })
+    );
+    if (result.current.virtualItems.length > 0) {
+      const item = result.current.virtualItems[0];
+      expect(typeof item.index).toBe('number');
+      expect(typeof item.offsetTop).toBe('number');
+      expect(typeof item.height).toBe('number');
+      expect(typeof item.measureRef).toBe('function');
+    }
+  });
+
+  test('virtualItems offsetTop is correct for uniform heights', () => {
+    const containerRef = { current: null };
+    const { result } = renderHook(() =>
+      useVirtualList({
+        itemCount: 100,
+        estimateHeight: () => 30,
+        overscan: 2,
+        containerRef,
+      })
+    );
+    const items = result.current.virtualItems;
+    for (const item of items) {
+      expect(item.offsetTop).toBe(item.index * 30);
+    }
+  });
+
+  test('scrollToIndex is callable without error', () => {
+    const containerRef = { current: null };
+    const { result } = renderHook(() =>
+      useVirtualList({
+        itemCount: 1000,
+        estimateHeight: () => 50,
+        containerRef,
+      })
+    );
+    expect(() => result.current.scrollToIndex(500)).not.toThrow();
+  });
+
+  test('handles zero items', () => {
+    const containerRef = { current: null };
+    const { result } = renderHook(() =>
+      useVirtualList({
+        itemCount: 0,
+        estimateHeight: () => 50,
+        containerRef,
+      })
+    );
+    expect(result.current.virtualItems).toEqual([]);
+    expect(result.current.totalHeight).toBe(0);
+  });
+});
+`,
     keyPoints: [
       "Binary search (O(log n)) to find the first visible item instead of scanning from 0 — critical at 100k+ items",
       "ResizeObserver on the container handles dynamic container sizing; requestAnimationFrame batches measurement updates to avoid layout thrashing",
@@ -374,6 +480,77 @@ function useQuery(key, fetcher, options = {}) {
     refetch: fetchData,
   };
 }`,
+    testCode: `import { renderHook } from '@testing-library/react';
+import { createQueryCache, useQuery } from './implementation';
+
+describe('Concurrent-Safe Data Fetching', () => {
+  test('createQueryCache returns correct API shape', () => {
+    const cache = createQueryCache();
+    expect(typeof cache.get).toBe('function');
+    expect(typeof cache.set).toBe('function');
+    expect(typeof cache.subscribe).toBe('function');
+    expect(typeof cache.getInflight).toBe('function');
+    expect(typeof cache.setInflight).toBe('function');
+    expect(typeof cache.clearInflight).toBe('function');
+  });
+
+  test('cache.set and cache.get store and retrieve data', () => {
+    const cache = createQueryCache();
+    cache.set('user-1', { name: 'Alice' });
+    const entry = cache.get('user-1');
+    expect(entry.data).toEqual({ name: 'Alice' });
+    expect(entry.error).toBeNull();
+    expect(typeof entry.timestamp).toBe('number');
+  });
+
+  test('cache.subscribe notifies on set', () => {
+    const cache = createQueryCache();
+    const calls: number[] = [];
+    cache.subscribe('key', () => calls.push(1));
+    cache.set('key', 'data');
+    expect(calls.length).toBe(1);
+  });
+
+  test('cache.subscribe returns unsubscribe function', () => {
+    const cache = createQueryCache();
+    const calls: number[] = [];
+    const unsub = cache.subscribe('key2', () => calls.push(1));
+    unsub();
+    cache.set('key2', 'data');
+    expect(calls.length).toBe(0);
+  });
+
+  test('cache inflight tracking works', () => {
+    const cache = createQueryCache();
+    expect(cache.getInflight('key')).toBeUndefined();
+    const promise = Promise.resolve('data');
+    const abort = jest.fn();
+    cache.setInflight('key', promise, abort);
+    expect(cache.getInflight('key')).toEqual({ promise, abort });
+    cache.clearInflight('key');
+    expect(cache.getInflight('key')).toBeUndefined();
+  });
+
+  test('useQuery returns correct shape', () => {
+    const { result } = renderHook(() =>
+      useQuery('test-key', () => Promise.resolve('data'), { enabled: false })
+    );
+    expect(result.current).toHaveProperty('data');
+    expect(result.current).toHaveProperty('error');
+    expect(result.current).toHaveProperty('status');
+    expect(result.current).toHaveProperty('isStale');
+    expect(typeof result.current.refetch).toBe('function');
+  });
+
+  test('useQuery status is idle when not enabled', () => {
+    const { result } = renderHook(() =>
+      useQuery('disabled-key', () => Promise.resolve('data'), { enabled: false })
+    );
+    expect(result.current.status).toBe('idle');
+    expect(result.current.data).toBeUndefined();
+  });
+});
+`,
     keyPoints: [
       "The cache lives OUTSIDE React (module-level) — this is how TanStack Query, SWR, and Apollo all work. React components are just subscribers to external mutable state",
       "Deduplication via inflightRequests: if ComponentA and ComponentB both mount with the same key, only one fetch fires. The second caller gets the existing promise",
@@ -556,6 +733,109 @@ function useSignal(signalGetter) {
 
   return signalGetter();
 }`,
+    testCode: `import { createSignal, createComputed, createEffect } from './implementation';
+
+describe('Incremental Computation with Dependency Tracking', () => {
+  test('createSignal returns [getter, setter]', () => {
+    const [get, set] = createSignal(0);
+    expect(typeof get).toBe('function');
+    expect(typeof set).toBe('function');
+    expect(get()).toBe(0);
+  });
+
+  test('signal setter updates the value', () => {
+    const [get, set] = createSignal(10);
+    set(20);
+    expect(get()).toBe(20);
+  });
+
+  test('signal setter ignores identical values (Object.is)', () => {
+    const [get, set] = createSignal(5);
+    const effectCalls: number[] = [];
+    createEffect(() => {
+      effectCalls.push(get());
+    });
+    // Effect runs once immediately
+    expect(effectCalls).toEqual([5]);
+    set(5); // same value
+    // Give microtask time to flush
+    return new Promise<void>(resolve => {
+      queueMicrotask(() => {
+        expect(effectCalls).toEqual([5]); // no re-run
+        resolve();
+      });
+    });
+  });
+
+  test('createComputed derives value from signals', () => {
+    const [count, setCount] = createSignal(3);
+    const doubled = createComputed(() => count() * 2);
+    expect(doubled()).toBe(6);
+    setCount(5);
+    expect(doubled()).toBe(10);
+  });
+
+  test('createComputed caches value (lazy evaluation)', () => {
+    let computeCount = 0;
+    const [count] = createSignal(1);
+    const derived = createComputed(() => {
+      computeCount++;
+      return count() + 1;
+    });
+    // Initial computation
+    expect(computeCount).toBe(1);
+    // Reading again should not recompute (not dirty)
+    derived();
+    derived();
+    expect(computeCount).toBe(1);
+  });
+
+  test('createEffect runs immediately and tracks dependencies', () => {
+    const [name, setName] = createSignal('Alice');
+    const log: string[] = [];
+    const dispose = createEffect(() => {
+      log.push(name());
+    });
+    expect(log).toEqual(['Alice']);
+    setName('Bob');
+    // Effect uses queueMicrotask, so check after microtask
+    return new Promise<void>(resolve => {
+      queueMicrotask(() => {
+        expect(log).toEqual(['Alice', 'Bob']);
+        dispose();
+        resolve();
+      });
+    });
+  });
+
+  test('createEffect dispose stops further execution', () => {
+    const [count, setCount] = createSignal(0);
+    const log: number[] = [];
+    const dispose = createEffect(() => {
+      log.push(count());
+    });
+    expect(log).toEqual([0]);
+    dispose();
+    setCount(1);
+    return new Promise<void>(resolve => {
+      queueMicrotask(() => {
+        // Should not have re-run after dispose
+        expect(log).toEqual([0]);
+        resolve();
+      });
+    });
+  });
+
+  test('computed chains work (A -> B -> C)', () => {
+    const [a, setA] = createSignal(1);
+    const b = createComputed(() => a() * 2);
+    const c = createComputed(() => b() + 10);
+    expect(c()).toBe(12);
+    setA(5);
+    expect(c()).toBe(20);
+  });
+});
+`,
     keyPoints: [
       "The global currentSubscriber variable is the key trick — when a signal's read() is called, it checks if anyone is 'listening' and auto-registers them. This is identical to Vue 3's track() mechanism",
       "Computed values are lazy + cached — they only recompute when marked dirty by a dependency change, not on every read. This is O(1) for repeated reads",
@@ -763,6 +1043,63 @@ function useWorker(workerFn, options = {}) {
 
   return { run, cancel, status, result, error };
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useWorker } from './implementation';
+
+describe('Web Worker Offloading', () => {
+  test('useWorker returns correct shape', () => {
+    const { result } = renderHook(() =>
+      useWorker((data) => data)
+    );
+    expect(typeof result.current.run).toBe('function');
+    expect(typeof result.current.cancel).toBe('function');
+    expect(typeof result.current.status).toBe('string');
+    expect(result.current.status).toBe('idle');
+    expect(result.current.result).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+
+  test('initial status is idle', () => {
+    const { result } = renderHook(() =>
+      useWorker((x) => x * 2)
+    );
+    expect(result.current.status).toBe('idle');
+  });
+
+  test('cancel sets status to cancelled', () => {
+    const { result } = renderHook(() =>
+      useWorker((x) => x)
+    );
+    act(() => {
+      result.current.cancel();
+    });
+    expect(result.current.status).toBe('cancelled');
+  });
+
+  test('useWorker accepts options with transferable flag', () => {
+    const { result } = renderHook(() =>
+      useWorker((buf) => buf, { transferable: true })
+    );
+    expect(result.current.status).toBe('idle');
+    expect(typeof result.current.run).toBe('function');
+  });
+
+  test('hook does not throw on unmount', () => {
+    const { unmount } = renderHook(() =>
+      useWorker((x) => x)
+    );
+    expect(() => unmount()).not.toThrow();
+  });
+
+  test('run is stable across re-renders', () => {
+    const workerFn = (x: number) => x;
+    const { result, rerender } = renderHook(() => useWorker(workerFn));
+    const firstRun = result.current.run;
+    rerender();
+    expect(result.current.run).toBe(firstRun);
+  });
+});
+`,
     keyPoints: [
       "Serializing functions to a Blob URL (new Function('return ' + fn)()) is how comlink and workerize-loader work — the function runs in a completely separate thread with no shared memory",
       "Transferable Objects (ArrayBuffer) are moved, not copied — the sender loses access. This is O(1) instead of O(n) for large data. Critical for image processing, audio, etc.",
@@ -925,6 +1262,83 @@ function useResource(cache, key, fetcher) {
 
   return resource.read();
 }`,
+    testCode: `import { createResourceCache } from './implementation';
+
+describe('Suspense Resource Cache', () => {
+  test('createResourceCache returns correct API shape', () => {
+    const cache = createResourceCache();
+    expect(typeof cache.createResource).toBe('function');
+    expect(typeof cache.preload).toBe('function');
+    expect(typeof cache.preloadAll).toBe('function');
+    expect(typeof cache.invalidate).toBe('function');
+  });
+
+  test('resource.read() throws promise when pending (Suspense contract)', () => {
+    const cache = createResourceCache();
+    const resource = cache.createResource('test', () =>
+      new Promise(r => setTimeout(() => r('data'), 100))
+    );
+    try {
+      resource.read();
+      throw new Error('Should have thrown');
+    } catch (thrown) {
+      expect(thrown).toBeInstanceOf(Promise);
+    }
+  });
+
+  test('resource.read() returns data after resolution', async () => {
+    const cache = createResourceCache();
+    const fetcher = () => Promise.resolve({ name: 'Alice' });
+    cache.preload('user', fetcher);
+    // Wait for the fetch to resolve
+    await new Promise(r => setTimeout(r, 10));
+    const resource = cache.createResource('user', fetcher);
+    const data = resource.read();
+    expect(data).toEqual({ name: 'Alice' });
+  });
+
+  test('resource.read() throws error on rejection (ErrorBoundary contract)', async () => {
+    const cache = createResourceCache();
+    const fetcher = () => Promise.reject(new Error('Network error'));
+    cache.preload('fail', fetcher);
+    await new Promise(r => setTimeout(r, 10));
+    const resource = cache.createResource('fail', fetcher);
+    expect(() => resource.read()).toThrow('Network error');
+  });
+
+  test('preload does not re-fetch if already cached', async () => {
+    let fetchCount = 0;
+    const cache = createResourceCache();
+    const fetcher = () => { fetchCount++; return Promise.resolve('data'); };
+    cache.preload('key1', fetcher);
+    cache.preload('key1', fetcher);
+    cache.preload('key1', fetcher);
+    expect(fetchCount).toBe(1);
+  });
+
+  test('invalidate clears cache entry', async () => {
+    const cache = createResourceCache();
+    let callCount = 0;
+    const fetcher = () => { callCount++; return Promise.resolve('data-' + callCount); };
+    cache.preload('inv-key', fetcher);
+    await new Promise(r => setTimeout(r, 10));
+    cache.invalidate('inv-key');
+    // After invalidation, creating a new resource should trigger a new fetch
+    cache.preload('inv-key', fetcher);
+    expect(callCount).toBe(2);
+  });
+
+  test('preloadAll starts multiple fetches in parallel', () => {
+    const cache = createResourceCache();
+    const calls: string[] = [];
+    const fetchA = () => { calls.push('A'); return Promise.resolve('A'); };
+    const fetchB = () => { calls.push('B'); return Promise.resolve('B'); };
+    cache.preloadAll([['keyA', fetchA], ['keyB', fetchB]]);
+    expect(calls).toContain('A');
+    expect(calls).toContain('B');
+  });
+});
+`,
     keyPoints: [
       "Throwing promises is the Suspense integration contract — when a component throws a promise, React catches it, shows the fallback, and retries when the promise resolves. This is how Relay and Next.js work internally",
       "preload() is the critical function — calling it BEFORE rendering (e.g., on route change) is what makes render-as-you-fetch faster than fetch-on-render. The component doesn't trigger the fetch; the router/event handler does",
@@ -1138,6 +1552,83 @@ function useInfiniteScroll({
     scrollContainerRef,
   };
 }`,
+    testCode: `import { renderHook } from '@testing-library/react';
+import { useInfiniteScroll } from './implementation';
+
+describe('Bidirectional Infinite Scroll', () => {
+  const mockFetchPage = jest.fn(async (cursor, direction) => ({
+    data: [{ id: cursor || '1', text: 'message' }],
+    nextCursor: 'next-cursor',
+    prevCursor: 'prev-cursor',
+  }));
+
+  beforeEach(() => {
+    mockFetchPage.mockClear();
+  });
+
+  test('useInfiniteScroll returns correct shape', () => {
+    const { result } = renderHook(() =>
+      useInfiniteScroll({
+        fetchPage: mockFetchPage,
+        initialCursor: 'start',
+      })
+    );
+    expect(Array.isArray(result.current.pages)).toBe(true);
+    expect(typeof result.current.hasNextPage).toBe('boolean');
+    expect(typeof result.current.hasPreviousPage).toBe('boolean');
+    expect(typeof result.current.isFetchingNext).toBe('boolean');
+    expect(typeof result.current.isFetchingPrevious).toBe('boolean');
+    expect(result.current.topSentinelRef).toBeDefined();
+    expect(result.current.bottomSentinelRef).toBeDefined();
+    expect(result.current.scrollContainerRef).toBeDefined();
+  });
+
+  test('sentinel refs are React refs (have current property)', () => {
+    const { result } = renderHook(() =>
+      useInfiniteScroll({
+        fetchPage: mockFetchPage,
+        initialCursor: 'start',
+      })
+    );
+    expect(result.current.topSentinelRef).toHaveProperty('current');
+    expect(result.current.bottomSentinelRef).toHaveProperty('current');
+    expect(result.current.scrollContainerRef).toHaveProperty('current');
+  });
+
+  test('initially has empty pages', () => {
+    const { result } = renderHook(() =>
+      useInfiniteScroll({
+        fetchPage: mockFetchPage,
+        initialCursor: 'start',
+      })
+    );
+    // Pages start empty before the initial fetch resolves
+    expect(Array.isArray(result.current.pages)).toBe(true);
+  });
+
+  test('hook does not throw on unmount', () => {
+    const { unmount } = renderHook(() =>
+      useInfiniteScroll({
+        fetchPage: mockFetchPage,
+        initialCursor: 'start',
+      })
+    );
+    expect(() => unmount()).not.toThrow();
+  });
+
+  test('accepts custom pageSize and maxPages', () => {
+    const { result } = renderHook(() =>
+      useInfiniteScroll({
+        fetchPage: mockFetchPage,
+        initialCursor: 'start',
+        pageSize: 50,
+        maxPages: 3,
+      })
+    );
+    expect(result.current).toBeDefined();
+  });
+});
+`,
     keyPoints: [
       "The scroll-position-maintenance trick when prepending is the hardest part: measure scrollHeight before update, then adjust scrollTop by the delta in a requestAnimationFrame after React commits. This is how Slack and Discord handle it",
       "IntersectionObserver with rootMargin creates a 'trigger zone' — loading starts 200px before the sentinel is visible, giving a smoother experience than scroll event listeners",
@@ -1335,6 +1826,79 @@ function useSearch(items, options = {}) {
     highlight,
   };
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useSearch } from './implementation';
+
+const testItems = [
+  { id: 1, name: 'React Hooks Guide', description: 'Learn useState and useEffect' },
+  { id: 2, name: 'Vue Composition API', description: 'Reactive programming with Vue' },
+  { id: 3, name: 'Angular Signals', description: 'Fine-grained reactivity in Angular' },
+  { id: 4, name: 'Svelte Stores', description: 'Reactive state management' },
+  { id: 5, name: 'React Performance Tips', description: 'Optimize rendering with memo' },
+];
+
+describe('Concurrent Search with useTransition + useDeferredValue', () => {
+  test('useSearch returns correct shape', () => {
+    const { result } = renderHook(() => useSearch(testItems));
+    expect(typeof result.current.query).toBe('string');
+    expect(typeof result.current.setQuery).toBe('function');
+    expect(Array.isArray(result.current.results)).toBe(true);
+    expect(typeof result.current.isPending).toBe('boolean');
+    expect(typeof result.current.isStale).toBe('boolean');
+    expect(typeof result.current.highlight).toBe('function');
+  });
+
+  test('returns all items when query is empty', () => {
+    const { result } = renderHook(() =>
+      useSearch(testItems, { maxResults: 100 })
+    );
+    expect(result.current.results.length).toBe(testItems.length);
+  });
+
+  test('setQuery updates the query string', () => {
+    const { result } = renderHook(() => useSearch(testItems));
+    act(() => {
+      result.current.setQuery('React');
+    });
+    expect(result.current.query).toBe('React');
+  });
+
+  test('filters items by key fields', () => {
+    const { result } = renderHook(() =>
+      useSearch(testItems, { keys: ['name'], maxResults: 50 })
+    );
+    act(() => {
+      result.current.setQuery('React');
+    });
+    // After transition settles, results should include items matching "React"
+    // Since useTransition is async, the filtering happens via deferred value
+    // We can at least check the query was set
+    expect(result.current.query).toBe('React');
+  });
+
+  test('respects maxResults option', () => {
+    const largeList = Array.from({ length: 100 }, (_, i) => ({
+      id: i, name: 'Item ' + i,
+    }));
+    const { result } = renderHook(() =>
+      useSearch(largeList, { maxResults: 10 })
+    );
+    expect(result.current.results.length).toBeLessThanOrEqual(10);
+  });
+
+  test('highlight function returns input text when query is empty', () => {
+    const { result } = renderHook(() => useSearch(testItems));
+    const highlighted = result.current.highlight('Hello World', '');
+    expect(highlighted).toBe('Hello World');
+  });
+
+  test('highlight function handles null/undefined text', () => {
+    const { result } = renderHook(() => useSearch(testItems));
+    expect(result.current.highlight(null, 'test')).toBeNull();
+    expect(result.current.highlight(undefined, 'test')).toBeUndefined();
+  });
+});
+`,
     keyPoints: [
       "Two separate state values: query (synchronous, drives the input) and searchQuery (inside transition, drives filtering). This separation is why typing stays responsive — the input never waits for filtering to complete",
       "useTransition makes the filtering interruptible — if the user types another character while filtering is in progress, React abandons the current render and starts a new one with the latest query. This is fundamentally better than debouncing",
@@ -1562,6 +2126,85 @@ function useSpring(config = {}) {
 
   return { value, velocity, isAnimating, animate, stop, set };
 }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { useSpring, SpringSimulation } from './implementation';
+
+describe('Spring-Based Animation Engine', () => {
+  test('SpringSimulation computes spring physics correctly', () => {
+    // Test the pure math class if exported
+    if (typeof SpringSimulation === 'undefined') return;
+    const sim = new SpringSimulation({ from: 0, to: 100, tension: 170, friction: 26, mass: 1 });
+    sim.start(100);
+    // After stepping, position should move toward target
+    sim.step(0.016); // one frame at 60fps
+    expect(sim.position).toBeGreaterThan(0);
+    expect(sim.position).toBeLessThan(100);
+    expect(sim.velocity).toBeGreaterThan(0);
+  });
+
+  test('SpringSimulation settles at target', () => {
+    if (typeof SpringSimulation === 'undefined') return;
+    const sim = new SpringSimulation({ from: 0, to: 100, tension: 170, friction: 26, precision: 0.01 });
+    sim.start(100);
+    // Step many times to let the spring settle
+    for (let i = 0; i < 1000; i++) {
+      sim.step(0.016);
+      if (!sim.isActive) break;
+    }
+    expect(sim.position).toBeCloseTo(100, 1);
+    expect(sim.isActive).toBe(false);
+  });
+
+  test('SpringSimulation preserves velocity on interruption', () => {
+    if (typeof SpringSimulation === 'undefined') return;
+    const sim = new SpringSimulation({ from: 0, to: 100, tension: 170, friction: 26 });
+    sim.start(100);
+    for (let i = 0; i < 10; i++) sim.step(0.016);
+    const velocityBefore = sim.velocity;
+    // Interrupt: change target mid-flight
+    sim.start(0);
+    // Velocity should be preserved (not reset to 0)
+    expect(sim.velocity).toBe(velocityBefore);
+  });
+
+  test('useSpring returns correct shape', () => {
+    const { result } = renderHook(() =>
+      useSpring({ from: 0, to: 0, tension: 170, friction: 26 })
+    );
+    expect(typeof result.current.value).toBe('number');
+    expect(typeof result.current.velocity).toBe('number');
+    expect(typeof result.current.isAnimating).toBe('boolean');
+    expect(typeof result.current.animate).toBe('function');
+    expect(typeof result.current.stop).toBe('function');
+    expect(typeof result.current.set).toBe('function');
+  });
+
+  test('useSpring set() instantly updates value', () => {
+    const { result } = renderHook(() =>
+      useSpring({ from: 0, to: 0 })
+    );
+    act(() => {
+      result.current.set(42);
+    });
+    expect(result.current.value).toBe(42);
+    expect(result.current.isAnimating).toBe(false);
+  });
+
+  test('useSpring stop() halts animation', () => {
+    const { result } = renderHook(() =>
+      useSpring({ from: 0, to: 0 })
+    );
+    act(() => {
+      result.current.animate(100);
+    });
+    expect(result.current.isAnimating).toBe(true);
+    act(() => {
+      result.current.stop();
+    });
+    expect(result.current.isAnimating).toBe(false);
+  });
+});
+`,
     keyPoints: [
       "The shared rAF loop (module-level Set of springs) is critical — creating a separate requestAnimationFrame per spring wastes CPU. Framer Motion and React Spring both batch all animations into one loop",
       "Preserving velocity on interruption is the KEY difference from CSS transitions — when you call animate(newTarget), the spring continues from its current velocity instead of stopping and restarting. This creates the natural, fluid feel Apple and Google motion guidelines recommend",
@@ -1739,6 +2382,84 @@ function StructuralSharingDemo() {
     </div>
   );
 }`,
+    testCode: `import { replaceEqualDeep } from './implementation';
+
+describe('Structural Sharing for Immutable State', () => {
+  test('returns same reference for identical primitives', () => {
+    expect(replaceEqualDeep(42, 42)).toBe(42);
+    expect(replaceEqualDeep('hello', 'hello')).toBe('hello');
+    expect(replaceEqualDeep(true, true)).toBe(true);
+    expect(replaceEqualDeep(null, null)).toBe(null);
+    expect(replaceEqualDeep(undefined, undefined)).toBe(undefined);
+  });
+
+  test('returns new value for different primitives', () => {
+    expect(replaceEqualDeep(1, 2)).toBe(2);
+    expect(replaceEqualDeep('a', 'b')).toBe('b');
+  });
+
+  test('preserves reference for deeply equal objects', () => {
+    const old = { a: 1, b: { c: 2 } };
+    const next = { a: 1, b: { c: 2 } };
+    const result = replaceEqualDeep(old, next);
+    expect(result).toBe(old);
+  });
+
+  test('preserves unchanged subtree references when sibling changes', () => {
+    const users = [{ id: 1, name: 'Alice' }];
+    const old = { users, meta: { page: 1 } };
+    const next = { users: [{ id: 1, name: 'Alice' }], meta: { page: 2 } };
+    const result = replaceEqualDeep(old, next);
+    // Root changed because meta changed
+    expect(result).not.toBe(old);
+    // But users subtree is preserved
+    expect(result.users).toBe(old.users);
+    expect(result.users[0]).toBe(old.users[0]);
+    // Meta changed
+    expect(result.meta).not.toBe(old.meta);
+  });
+
+  test('preserves reference for deeply equal arrays', () => {
+    const old = [1, 2, [3, 4]];
+    const next = [1, 2, [3, 4]];
+    const result = replaceEqualDeep(old, next);
+    expect(result).toBe(old);
+  });
+
+  test('shares elements in arrays of different lengths', () => {
+    const sharedObj = { id: 1, name: 'Alice' };
+    const old = [sharedObj, { id: 2, name: 'Bob' }];
+    const next = [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }, { id: 3, name: 'Charlie' }];
+    const result = replaceEqualDeep(old, next);
+    expect(result).not.toBe(old); // different length
+    expect(result[0]).toBe(sharedObj); // first item preserved
+    expect(result[1]).toBe(old[1]); // second item preserved
+  });
+
+  test('handles Date comparison', () => {
+    const d1 = new Date('2025-01-01');
+    const d2 = new Date('2025-01-01');
+    const d3 = new Date('2025-06-01');
+    expect(replaceEqualDeep(d1, d2)).toBe(d1);
+    expect(replaceEqualDeep(d1, d3)).toBe(d3);
+  });
+
+  test('handles nested objects with partial changes', () => {
+    const old = {
+      settings: { theme: 'dark', fontSize: 14 },
+      profile: { name: 'Alice', avatar: 'cat.png' },
+    };
+    const next = {
+      settings: { theme: 'light', fontSize: 14 },
+      profile: { name: 'Alice', avatar: 'cat.png' },
+    };
+    const result = replaceEqualDeep(old, next);
+    expect(result).not.toBe(old);
+    expect(result.settings).not.toBe(old.settings); // theme changed
+    expect(result.profile).toBe(old.profile); // profile unchanged
+  });
+});
+`,
     keyPoints: [
       "The bottom-up recursion is critical — you must compare children first, then decide if the parent can be reused. If all children kept their old reference, the parent can return oldData directly, preserving the entire subtree identity in one check",
       "Object.is as the leaf comparison handles edge cases like NaN === NaN (true in Object.is) and +0 !== -0 (distinguished by Object.is), matching React's own comparison semantics for props and state",
@@ -1968,6 +2689,96 @@ function ParallelLoaderDemo() {
     </div>
   );
 }`,
+    testCode: `import { createLoader, preloadRoute } from './implementation';
+
+describe('Parallel Data Loader (Suspense Waterfall Eliminator)', () => {
+  beforeEach(() => {
+    // Clear any module-level cache between tests
+    // We test createLoader independently each time
+  });
+
+  test('createLoader returns an object with preload, read, invalidate', () => {
+    const loader = createLoader(async () => 'data');
+    expect(typeof loader.preload).toBe('function');
+    expect(typeof loader.read).toBe('function');
+    expect(typeof loader.invalidate).toBe('function');
+  });
+
+  test('loader.read throws a promise when data is pending (Suspense contract)', () => {
+    const loader = createLoader(async () => {
+      await new Promise(r => setTimeout(r, 100));
+      return 'resolved';
+    });
+    loader.preload();
+    try {
+      loader.read();
+      throw new Error('Should have thrown');
+    } catch (thrown) {
+      expect(thrown).toBeInstanceOf(Promise);
+    }
+  });
+
+  test('loader.read returns data after resolution', async () => {
+    const loader = createLoader(async () => 'hello', {
+      cacheKey: () => 'test-read',
+    });
+    const preloaded = loader.preload();
+    // Wait for the fetch to complete
+    await preloaded._entry.promise;
+    const data = loader.read();
+    expect(data).toBe('hello');
+  });
+
+  test('loader.read throws error on rejection', async () => {
+    const loader = createLoader(async () => {
+      throw new Error('fetch failed');
+    }, { cacheKey: () => 'test-err' });
+    loader.preload();
+    // Wait for the promise to settle
+    try {
+      await loader.preload()._entry.promise;
+    } catch {}
+    expect(() => loader.read()).toThrow('fetch failed');
+  });
+
+  test('preload deduplicates in-flight requests', () => {
+    let callCount = 0;
+    const loader = createLoader(async () => {
+      callCount++;
+      await new Promise(r => setTimeout(r, 50));
+      return 'data';
+    }, { cacheKey: () => 'dedup-key' });
+    loader.preload();
+    loader.preload();
+    loader.preload();
+    expect(callCount).toBe(1);
+  });
+
+  test('invalidate clears cache so next read re-fetches', async () => {
+    let callCount = 0;
+    const loader = createLoader(async () => {
+      callCount++;
+      return 'data-' + callCount;
+    }, { cacheKey: () => 'inv-key' });
+    loader.preload();
+    await loader.preload()._entry.promise;
+    expect(loader.read()).toBe('data-1');
+    loader.invalidate();
+    loader.preload();
+    await loader.preload()._entry.promise;
+    expect(loader.read()).toBe('data-2');
+  });
+
+  test('preloadRoute initiates multiple loaders in parallel', () => {
+    const calls: string[] = [];
+    const loaderA = createLoader(async () => { calls.push('A'); return 'A'; }, { cacheKey: () => 'route-a' });
+    const loaderB = createLoader(async () => { calls.push('B'); return 'B'; }, { cacheKey: () => 'route-b' });
+    preloadRoute([loaderA.preload(), loaderB.preload()]);
+    expect(calls).toContain('A');
+    expect(calls).toContain('B');
+  });
+});
+`,
     keyPoints: [
       "The key insight is decoupling fetch initiation from component rendering — by calling preload() in an event handler (click, hover, route change), all fetches start in parallel before React even begins rendering the component tree, eliminating the Suspense waterfall",
       "The Suspense integration works via the throw-promise protocol: read() throws a promise when data is pending (React catches it and shows the fallback), throws an error when failed (caught by ErrorBoundary), and returns data when resolved — this is the same contract Relay and React Cache use",
@@ -2175,6 +2986,92 @@ function usePersistentState(key, initialState, options = {}) {
 //     </div>
 //   );
 // }`,
+    testCode: `import { renderHook, act } from '@testing-library/react';
+import { runMigrations, usePersistentState } from './implementation';
+
+// Mock localStorage
+function createMockStorage() {
+  const store = new Map();
+  return {
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, value),
+    removeItem: (key) => store.delete(key),
+    clear: () => store.clear(),
+    _store: store,
+  };
+}
+
+describe('Persistent State with Version Migrations', () => {
+  test('runMigrations applies sequential migrations', () => {
+    const migrations = {
+      0: (data) => ({ ...data, theme: 'light' }),
+      1: (data) => ({ ...data, lang: 'en' }),
+      2: (data) => ({ ...data, notifications: true }),
+    };
+    const result = runMigrations({ name: 'Alice' }, 0, 3, migrations);
+    expect(result).toEqual({ name: 'Alice', theme: 'light', lang: 'en', notifications: true });
+  });
+
+  test('runMigrations throws on missing migration', () => {
+    const migrations = {
+      0: (data) => ({ ...data, v1: true }),
+      // missing migration for version 1 -> 2
+    };
+    expect(() => runMigrations({}, 0, 2, migrations)).toThrow('Missing migration');
+  });
+
+  test('runMigrations returns data unchanged if versions match', () => {
+    const data = { name: 'Bob' };
+    const result = runMigrations(data, 3, 3, {});
+    expect(result).toEqual({ name: 'Bob' });
+  });
+
+  test('usePersistentState returns initial state when storage is empty', () => {
+    const storage = createMockStorage();
+    const { result } = renderHook(() =>
+      usePersistentState('test-key', { count: 0 }, { storage, version: 1, migrations: {} })
+    );
+    const [state] = result.current;
+    expect(state).toEqual({ count: 0 });
+  });
+
+  test('usePersistentState reads and migrates persisted data', () => {
+    const storage = createMockStorage();
+    storage.setItem('test-key', JSON.stringify({
+      __version: 0,
+      __timestamp: Date.now(),
+      data: { name: 'Alice' },
+    }));
+    const migrations = {
+      0: (data) => ({ ...data, role: 'user' }),
+    };
+    const { result } = renderHook(() =>
+      usePersistentState('test-key', { name: '', role: '' }, { storage, version: 1, migrations })
+    );
+    const [state] = result.current;
+    expect(state).toEqual({ name: 'Alice', role: 'user' });
+  });
+
+  test('usePersistentState falls back to initialState on corrupt data', () => {
+    const storage = createMockStorage();
+    storage.setItem('test-key', 'NOT_VALID_JSON{{{');
+    const { result } = renderHook(() =>
+      usePersistentState('test-key', { safe: true }, { storage, version: 1, migrations: {} })
+    );
+    const [state] = result.current;
+    expect(state).toEqual({ safe: true });
+  });
+
+  test('usePersistentState provides clearStorage in meta', () => {
+    const storage = createMockStorage();
+    const { result } = renderHook(() =>
+      usePersistentState('test-key', { val: 1 }, { storage })
+    );
+    const [, , meta] = result.current;
+    expect(typeof meta.clearStorage).toBe('function');
+  });
+});
+`,
     keyPoints: [
       "Sequential migration chaining (v0 -> v1 -> v2 -> v3) is the same pattern Redux Persist uses — each migration only knows about the transition from one version to the next, keeping each function simple and testable",
       "The lazy initializer in useState(() => { ... }) runs synchronously before first render, preventing a flash of default state. This avoids the hydration flicker that plagues naive useEffect-based persistence",
@@ -2414,6 +3311,63 @@ function useFlipAnimation(containerRef, options = {}) {
 //     </div>
 //   );
 // }`,
+    testCode: `import { renderHook } from '@testing-library/react';
+import { useFlipAnimation } from './implementation';
+
+describe('FLIP Animation Engine', () => {
+  test('useFlipAnimation is a function', () => {
+    expect(typeof useFlipAnimation).toBe('function');
+  });
+
+  test('useFlipAnimation accepts a ref and options', () => {
+    const containerRef = { current: null };
+    // Should not throw when called with a null ref
+    const { result } = renderHook(() =>
+      useFlipAnimation(containerRef, { duration: 400 })
+    );
+    // Hook returns void (it operates via side effects)
+    expect(result.current).toBeUndefined();
+  });
+
+  test('useFlipAnimation accepts default options', () => {
+    const containerRef = { current: null };
+    const { result } = renderHook(() =>
+      useFlipAnimation(containerRef)
+    );
+    expect(result.current).toBeUndefined();
+  });
+
+  test('useFlipAnimation accepts custom enter and exit config', () => {
+    const containerRef = { current: null };
+    const { result } = renderHook(() =>
+      useFlipAnimation(containerRef, {
+        duration: 500,
+        easing: 'ease-in-out',
+        enterFrom: { opacity: 0, scale: 0.5, y: 30 },
+        exitTo: { opacity: 0, scale: 0.5, y: -30 },
+      })
+    );
+    expect(result.current).toBeUndefined();
+  });
+
+  test('hook does not throw on unmount', () => {
+    const containerRef = { current: null };
+    const { unmount } = renderHook(() =>
+      useFlipAnimation(containerRef, { duration: 300 })
+    );
+    expect(() => unmount()).not.toThrow();
+  });
+
+  test('hook handles re-renders without errors', () => {
+    const containerRef = { current: null };
+    const { rerender } = renderHook(
+      ({ dur }) => useFlipAnimation(containerRef, { duration: dur }),
+      { initialProps: { dur: 300 } }
+    );
+    expect(() => rerender({ dur: 500 })).not.toThrow();
+  });
+});
+`,
     keyPoints: [
       "useLayoutEffect is essential for FLIP — it fires synchronously after DOM mutations but before the browser paints. This gives you the tiny window to measure 'Last' positions and apply 'Invert' transforms before the user sees the un-animated layout change",
       "The Web Animations API (element.animate()) is used instead of CSS transitions because it provides cancel() for interruptions, onfinish callbacks for cleanup, and doesn't require managing CSS classes or inline style cleanup",

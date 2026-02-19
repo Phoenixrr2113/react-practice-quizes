@@ -10,7 +10,7 @@ import type { Challenge, Category, Difficulty } from '@/types/challenge';
 
 export function ChallengeGrid() {
   const navigate = useNavigate();
-  const { completedIds, progress } = useProgress(ALL_CHALLENGES.length);
+  const { completedIds, completionTimes, progress, resetProgress } = useProgress(ALL_CHALLENGES.length);
   const [activeCategory, setActiveCategory] = useState<'All' | Category>('All');
   const [activeDifficulty, setActiveDifficulty] = useState<'All' | Difficulty>('All');
   const [query, setQuery] = useState('');
@@ -43,10 +43,21 @@ export function ChallengeGrid() {
               Expert Level · 8+ Years · {ALL_CHALLENGES.length} Challenges
             </p>
           </div>
-          <ProgressBar
-            value={progress}
-            label={`${completedIds.size}/${ALL_CHALLENGES.length} completed`}
-          />
+          <div className="flex items-center gap-4">
+            <ProgressBar
+              value={progress}
+              label={`${completedIds.size}/${ALL_CHALLENGES.length} completed`}
+            />
+            {completedIds.size > 0 && (
+              <button
+                onClick={resetProgress}
+                className="text-xs text-muted hover:text-error border border-border hover:border-error/50
+                           px-2 py-1 rounded transition-colors cursor-pointer bg-transparent font-[inherit]"
+              >
+                Reset
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -73,6 +84,7 @@ export function ChallengeGrid() {
             key={c.id}
             challenge={c}
             isCompleted={completedIds.has(c.id)}
+            completionTime={completionTimes[c.id]}
             onStart={handleStart}
           />
         ))}

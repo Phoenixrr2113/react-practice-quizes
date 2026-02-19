@@ -12,6 +12,7 @@ export interface Challenge {
   requirements: string[];
   starterCode: string;
   solutionCode: string;
+  testCode?: string;
   keyPoints: string[];
   followUp: string;
 }

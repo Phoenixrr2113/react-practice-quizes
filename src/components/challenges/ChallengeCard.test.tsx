@@ -53,4 +53,14 @@ describe('ChallengeCard', () => {
     render(<ChallengeCard challenge={mockChallenge} isCompleted={false} onStart={() => {}} />);
     expect(screen.getByText('⏱ 25 min')).toBeInTheDocument();
   });
+
+  it('shows completion time when completed with time', () => {
+    render(<ChallengeCard challenge={mockChallenge} isCompleted={true} completionTime={125} onStart={() => {}} />);
+    expect(screen.getByText('✓ Completed in 2:05')).toBeInTheDocument();
+  });
+
+  it('shows Review instead of Start for completed challenges', () => {
+    render(<ChallengeCard challenge={mockChallenge} isCompleted={true} onStart={() => {}} />);
+    expect(screen.getByText('Review →')).toBeInTheDocument();
+  });
 });
